@@ -16,14 +16,14 @@ if (OPENMP_FOUND)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif()
 
-SET(CMAKE_PREFIX_PATH "/opencv341-CUDA")
-find_package(OpenCV PATHS "/opencv341-CUDA")
+#SET(CMAKE_PREFIX_PATH "/opencv341-CUDA")
+#find_package(OpenCV PATHS "/opencv341-CUDA")
 
 # set(Boost_USE_STATIC_LIBS ON) /* turned off for -lboost_locale */
-set(Boost_USE_MULTITHREADED ON)
-set(Boost_USE_STATIC_RUNTIME ON)
-find_package(Boost COMPONENTS filesystem system locale REQUIRED)
-find_package(OpenCV REQUIRED )
+#set(Boost_USE_MULTITHREADED ON)
+#set(Boost_USE_STATIC_RUNTIME ON)
+#find_package(Boost COMPONENTS filesystem system locale REQUIRED)
+#find_package(OpenCV REQUIRED )
 
 # Tell cmake we will need dlib.  This command will pull in dlib and compile it
 # into your project.  Note that you don't need to compile or install dlib.  All
