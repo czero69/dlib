@@ -31,10 +31,12 @@
 #include "myUtils.h"
 #include "dlib/data_io/image_dataset_metadata.h"
 
+#include <utility>
+
 using namespace std;
 using namespace dlib;
 
-bool DEBUG_IMSHOW = 0;
+bool DEBUG_IMSHOW = 1;
 
 
 // shrinked model5:
@@ -102,6 +104,7 @@ int main(int argc, char** argv) try
     std::vector<std::vector<mmod_rect>> boxes_train, boxes_test;
     std::vector<std::string> parts_list_train;
     std::vector<std::string> parts_list_test;
+    //std::vector<std::vector<std::pair<dlib::mmod_rect, std::vector<dlib::point>>>> boxesPartsTrain, boxesPartsTest;
 
     // loads images to RAM, downsacles them, then loads images to RAM to fit all available space
     imageLoader myImgLoader(training_filepath, testing_filepath);
@@ -114,6 +117,7 @@ int main(int argc, char** argv) try
     image_window win;
     win.set_image(images_train[0]);
 
+    //for(auto && b : boxes_train[0])
     for(auto && b : boxes_train[0])
     {
         win.add_overlay(b, rgb_pixel(255,0,0));
@@ -122,6 +126,43 @@ int main(int argc, char** argv) try
     cout << "Hit enter to end program" << endl;
     cin.get();
     }
+
+    /*
+    if(DEBUG_IMSHOW)
+    {
+    image_window win, win2;
+
+    for(int i = 0; i < faces_train.size(); i++)
+    {
+        win.clear_overlay();
+        for(auto && b : faces_train[i])
+        {
+        win.set_image(images_train[i]);
+        win.add_overlay(b.get_rect(), rgb_pixel(255,255,255));
+        win.add_overlay(dlib::rectangle(b.part(0).x(),b.part(0).y(),b.part(0).x() + 2, b.part(0).y() + 2), rgb_pixel(255,255,255));
+        win.add_overlay(dlib::rectangle(b.part(1).x(),b.part(1).y(),b.part(1).x() + 2, b.part(1).y() + 2), rgb_pixel(255,255,255));
+        win.add_overlay(dlib::rectangle(b.part(2).x(),b.part(2).y(),b.part(2).x() + 2, b.part(2).y() + 2), rgb_pixel(255,255,255));
+        win.add_overlay(dlib::rectangle(b.part(3).x(),b.part(3).y(),b.part(3).x() + 2, b.part(3).y() + 2), rgb_pixel(255,255,255));
+        }
+        cout << "id: " << i << "Hit enter ..." << endl;
+        cin.get();
+    }
+    for(int i = 0; i < faces_train.size(); i++)
+    {
+        win2.clear_overlay();
+        for(auto && b : faces_test[i])
+        {
+            win2.set_image(images_test[i]);
+            win2.add_overlay(b.get_rect(), rgb_pixel(255,255,255));
+            win2.add_overlay(dlib::rectangle(b.part(0).x(),b.part(0).y(),b.part(0).x() + 2, b.part(0).y() + 2), rgb_pixel(255,255,255));
+            win2.add_overlay(dlib::rectangle(b.part(1).x(),b.part(1).y(),b.part(1).x() + 2, b.part(1).y() + 2), rgb_pixel(255,255,255));
+            win2.add_overlay(dlib::rectangle(b.part(2).x(),b.part(2).y(),b.part(2).x() + 2, b.part(2).y() + 2), rgb_pixel(255,255,255));
+            win2.add_overlay(dlib::rectangle(b.part(3).x(),b.part(3).y(),b.part(3).x() + 2, b.part(3).y() + 2), rgb_pixel(255,255,255));
+        }
+        cout << "id: " << i << "Hit enter ..." << endl;
+        cin.get();
+    }
+    }*/
 
 
     int num_overlapped_ignored_test = 0;
@@ -245,7 +286,8 @@ int main(int argc, char** argv) try
     trainer.set_synchronization_file(sync_filename, std::chrono::minutes(5));
 
     std::vector<matrix<rgb_pixel>> mini_batch_samples;
-    std::vector<std::vector<mmod_rect>> mini_batch_labels; 
+    std::vector<std::vector<mmod_rect>> mini_batch_labels;
+    //std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>> mini_batch_labels;
     random_cropper cropper;
     cropper.set_seed(time(0));
     cropper.set_chip_dims(350, 350);
@@ -260,31 +302,36 @@ int main(int argc, char** argv) try
     cout << trainer << cropper << endl;
 
     int cnt = 1;
-    // Run the trainer until the learning rate gets small.  
-    //while(trainer.get_learning_rate() >= 1e-4)
-    while(0)
+    // Run the trainer until the learning rate gets small.
+
+    // load new images in roundRobin fashion every 5k iterations
+    // this is due to ram limitations
+    const int CNT_RELOAD_IMAGES = 5000;
+
+    if(myImgLoader.checkRamIsNotEnough())
     {
-        // Every 30 mini-batches we do a testing mini-batch.  
+        std::cout << "NOTE: Ram mem is not enough, images will be reloading in roundRobin fashion;" << std::endl;
+    }
+
+    while(trainer.get_learning_rate() >= 1e-4)
+    {
+        // Every 30 mini-batches we do a testing mini-batch.
+        if(cnt % CNT_RELOAD_IMAGES == 0)
+            if(myImgLoader.checkRamIsNotEnough())
+            {
+                std::cout << "reloading images " << std::endl;
+                myImgLoader(images_train, images_test, boxes_train , boxes_test, parts_list_train, parts_list_test);
+            }
+
         if (cnt%30 != 0 || images_test.size() == 0)
         {
+            //cropper(27, images_train, boxes_train, mini_batch_samples, mini_batch_labels);
             cropper(27, images_train, boxes_train, mini_batch_samples, mini_batch_labels);
             // We can also randomly jitter the colors and that often helps a detector
             // generalize better to new images.
             for (auto&& img : mini_batch_samples)
                 disturb_colors(img, rnd);
 
-            if(DEBUG_IMSHOW)
-            {
-            image_window win;
-            win.set_image(mini_batch_samples[0]);
-            cout << "Hit enter 0" << endl;
-            for(auto && b : mini_batch_labels[0])
-            {
-                win.add_overlay(b, rgb_pixel(255,0,0));
-            }
-
-            cin.get();
-            }
             // It's a good idea to, at least once, put code here that displays the images
             // and boxes the random cropper is generating.  You should look at them and
             // think about if the output makes sense for your problem.  Most of the time
@@ -300,6 +347,7 @@ int main(int argc, char** argv) try
         }
         else
         {
+            //cropper(27, images_test, boxes_test, mini_batch_samples, mini_batch_labels);
             cropper(27, images_test, boxes_test, mini_batch_samples, mini_batch_labels);
             // We can also randomly jitter the colors and that often helps a detector
             // generalize better to new images.

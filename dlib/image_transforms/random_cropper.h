@@ -124,6 +124,44 @@ namespace dlib
         template <
             typename array_type
             >
+        void operator() (
+            size_t num_crops,
+            const array_type& images,
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& rects,
+            array_type& crops,
+            std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& crop_rects
+        )
+        {
+            DLIB_CASSERT(images.size() == rects.size());
+            crops.clear();
+            crop_rects.clear();
+            append(num_crops, images, rects, crops, crop_rects);
+        }
+
+        template <
+            typename array_type
+            >
+        void append (
+            size_t num_crops,
+            const array_type& images,
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& rects,
+            array_type& crops,
+            std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& crop_rects
+        )
+        {
+            DLIB_CASSERT(images.size() == rects.size());
+            DLIB_CASSERT(crops.size() == crop_rects.size());
+            auto original_size = crops.size();
+            crops.resize(crops.size()+num_crops);
+            crop_rects.resize(crop_rects.size()+num_crops);
+            parallel_for(original_size, original_size+num_crops, [&](long i) {
+                (*this)(images, rects, crops[i], crop_rects[i]);
+            });
+        }
+
+        template <
+            typename array_type
+            >
         void append (
             size_t num_crops,
             const array_type& images,
@@ -152,6 +190,25 @@ namespace dlib
             const std::vector<std::vector<mmod_rect>>& rects,
             image_type& crop,
             std::vector<mmod_rect>& crop_rects
+        )
+        {
+            DLIB_CASSERT(images.size() == rects.size());
+            size_t idx;
+            { std::lock_guard<std::mutex> lock(rnd_mutex);
+                idx = rnd.get_integer(images.size());
+            }
+            (*this)(images[idx], rects[idx], crop, crop_rects);
+        }
+
+        template <
+            typename array_type,
+            typename image_type
+            >
+        void operator() (
+            const array_type& images,
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& rects,
+            image_type& crop,
+            std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>& crop_rects
         )
         {
             DLIB_CASSERT(images.size() == rects.size());
@@ -228,6 +285,61 @@ namespace dlib
             }
         }
 
+
+        template <
+            typename image_type1,
+            typename image_type2
+            >
+        void operator() (
+            const image_type1& img,
+            const std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>& rects,
+            image_type2& crop,
+            std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>& crop_rects
+        )
+        {
+            DLIB_CASSERT(num_rows(img)*num_columns(img) != 0);
+            chip_details crop_plan;
+            bool should_flip_crop;
+            make_crop_plan(img, rects, crop_plan, should_flip_crop);
+
+            extract_image_chip(img, crop_plan, crop);
+            const rectangle_transform tform = get_mapping_to_chip(crop_plan);
+
+            // copy rects into crop_rects and set ones that are outside the crop to ignore or
+            // drop entirely as appropriate.
+            crop_rects.clear();
+            for (auto rect : rects)
+            {
+                // map to crop
+                rect.first.rect = tform(rect.first.rect);
+                rect.second = tform(rect.second);
+
+                // if the rect is at least partly in the crop
+                if (get_rect(crop).intersect(rect.first.rect).area() != 0)
+                {
+                    // set to ignore if not totally in the crop or if too small.
+                    if (!get_rect(crop).contains(rect.first.rect) ||
+                        ((long)rect.first.rect.height() < min_object_length_long_dim  && (long)rect.first.rect.width() < min_object_length_long_dim) ||
+                        ((long)rect.first.rect.height() < min_object_length_short_dim || (long)rect.first.rect.width() < min_object_length_short_dim))
+                    {
+                        rect.first.ignore = true;
+                    }
+
+                    crop_rects.push_back(rect);
+                }
+            }
+
+            // Also randomly flip the image
+            if (should_flip_crop)
+            {
+                image_type2 temp;
+                flip_image_left_right(crop, temp);
+                swap(crop,temp);
+                for (auto&& rect : crop_rects)
+                    rect.first.rect = impl::flip_rect_left_right(rect.first.rect, get_rect(crop));
+            }
+        }
+
     private:
 
         template <typename image_type1>
@@ -285,6 +397,61 @@ namespace dlib
             crop_plan = chip_details(crop_rect, dims, angle);
         }
 
+        template <typename image_type1>
+        void make_crop_plan (
+            const image_type1& img,
+            const std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>& rects,
+            chip_details& crop_plan,
+            bool& should_flip_crop
+        )
+        {
+            std::lock_guard<std::mutex> lock(rnd_mutex);
+            rectangle crop_rect;
+            if (has_non_ignored_box(rects) && rnd.get_random_double() >= background_crops_fraction)
+            {
+                auto rect = rects[randomly_pick_rect(rects)].first.rect;
+
+                // perturb the location of the crop by a small fraction of the object's size.
+                const point rand_translate = dpoint(rnd.get_double_in_range(-translate_amount,translate_amount)*std::max(rect.height(),rect.width()),
+                                                    rnd.get_double_in_range(-translate_amount,translate_amount)*std::max(rect.height(),rect.width()));
+
+                // We are going to grow rect into the cropping rect.  First, we grow it a
+                // little so that it has the desired minimum border around it.
+                drectangle drect = centered_drect(center(rect)+rand_translate, rect.width()/max_object_size, rect.height()/max_object_size);
+
+                // Now make rect have the same aspect ratio as dims so that there won't be
+                // any funny stretching when we crop it.  We do this by growing it along
+                // whichever dimension is too short.
+                const double target_aspect = dims.cols/(double)dims.rows;
+                if (drect.width()/drect.height() < target_aspect)
+                    drect = centered_drect(drect, target_aspect*drect.height(), drect.height());
+                else
+                    drect = centered_drect(drect, drect.width(), drect.width()/target_aspect);
+
+                // Now perturb the scale of the crop.  We do this by shrinking it, but not
+                // so much that it gets smaller than the min object sizes require.
+                double current_width = dims.cols*rect.width()/drect.width();
+                double current_height = dims.rows*rect.height()/drect.height();
+
+                // never make any dimension smaller than the short dim.
+                double min_scale1 = std::max(min_object_length_short_dim/current_width, min_object_length_short_dim/current_height);
+                // at least one dimension needs to be longer than the long dim.
+                double min_scale2 = std::min(min_object_length_long_dim/current_width, min_object_length_long_dim/current_height);
+                double min_scale = std::max(min_scale1, min_scale2);
+
+                const double rand_scale_perturb = 1.0/rnd.get_double_in_range(min_scale, 1);
+                crop_rect = centered_drect(drect, drect.width()*rand_scale_perturb, drect.height()*rand_scale_perturb);
+
+            }
+            else
+            {
+                crop_rect = make_random_cropping_rect(img);
+            }
+            should_flip_crop = randomly_flip && rnd.get_random_double() > 0.5;
+            const double angle = rnd.get_double_in_range(-max_rotation_degrees, max_rotation_degrees)*pi/180;
+            crop_plan = chip_details(crop_rect, dims, angle);
+        }
+
         bool has_non_ignored_box (
             const std::vector<mmod_rect>& rects
         ) const
@@ -297,6 +464,18 @@ namespace dlib
             return false;
         }
 
+        bool has_non_ignored_box (
+            const std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>& rects
+        ) const
+        {
+            for (auto&& b : rects)
+            {
+                if (!b.first.ignore)
+                    return true;
+            }
+            return false;
+        }
+
         size_t randomly_pick_rect (
             const std::vector<mmod_rect>& rects
         ) 
@@ -304,6 +483,17 @@ namespace dlib
             DLIB_CASSERT(has_non_ignored_box(rects));
             size_t idx = rnd.get_integer(rects.size());
             while(rects[idx].ignore)
+                idx = rnd.get_integer(rects.size());
+            return idx;
+        }
+
+        size_t randomly_pick_rect (
+            const std::vector<std::pair<mmod_rect, std::vector<point>>>& rects
+        )
+        {
+            DLIB_CASSERT(has_non_ignored_box(rects));
+            size_t idx = rnd.get_integer(rects.size());
+            while(rects[idx].first.ignore)
                 idx = rnd.get_integer(rects.size());
             return idx;
         }

@@ -210,6 +210,20 @@ namespace dlib
         {
         }
 
+        std::vector<dlib::point> operator() (
+                const std::vector<dlib::point>& vec
+                ) const
+        {
+            std::vector<dlib::point> newPoints;
+            for(auto && v : vec)
+            {
+                dpoint dp = (dpoint)v ;
+                newPoints.push_back(tform(dp));
+            }
+
+            return newPoints;
+        }
+
         drectangle operator() (
             const drectangle& r
         ) const

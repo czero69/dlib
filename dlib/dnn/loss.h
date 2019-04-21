@@ -755,6 +755,54 @@ namespace dlib
             set_overlap_nms(boxes);
         }
 
+        mmod_options (
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& boxes,
+            const unsigned long target_size,       // We want the length of the longest dimension of the detector window to be this.
+            const unsigned long min_target_size,   // But we require that the smallest dimension of the detector window be at least this big.
+            const double min_detector_window_overlap_iou = 0.75
+        )
+        {
+            DLIB_CASSERT(0 < min_target_size && min_target_size <= target_size);
+            DLIB_CASSERT(0.5 < min_detector_window_overlap_iou && min_detector_window_overlap_iou < 1);
+
+            // Figure out what detector windows we will need.
+            for (auto& label : get_labels(boxes))
+            {
+                for (auto ratio : find_covering_aspect_ratios(boxes, test_box_overlap(min_detector_window_overlap_iou), label))
+                {
+                    double detector_width;
+                    double detector_height;
+                    if (ratio < 1)
+                    {
+                        detector_height = target_size;
+                        detector_width = ratio*target_size;
+                        if (detector_width < min_target_size)
+                        {
+                            detector_height = min_target_size/ratio;
+                            detector_width = min_target_size;
+                        }
+                    }
+                    else
+                    {
+                        detector_width = target_size;
+                        detector_height = target_size/ratio;
+                        if (detector_height < min_target_size)
+                        {
+                            detector_width = min_target_size*ratio;
+                            detector_height = min_target_size;
+                        }
+                    }
+
+                    detector_window_details p((unsigned long)std::round(detector_width), (unsigned long)std::round(detector_height), label);
+                    detector_windows.push_back(p);
+                }
+            }
+
+            DLIB_CASSERT(detector_windows.size() != 0, "You can't call mmod_options's constructor with a set of boxes that is empty (or only contains ignored boxes).");
+
+            set_overlap_nms(boxes);
+        }
+
         mmod_options(
             use_image_pyramid assume_image_pyramid,
             const std::vector<std::vector<mmod_rect>>& boxes,
@@ -794,6 +842,34 @@ namespace dlib
                     if (b.ignore)
                         continue;
                     rtemp.push_back(b.rect);
+                }
+                temp.push_back(std::move(rtemp));
+            }
+            overlaps_nms = find_tight_overlap_tester(temp);
+            // Relax the non-max-suppression a little so that it doesn't accidentally make
+            // it impossible for the detector to output boxes matching the training data.
+            // This could be a problem with the tightest possible nms test since there is
+            // some small variability in how boxes get positioned between the training data
+            // and the coordinate system used by the detector when it runs.  So relaxing it
+            // here takes care of that.
+            auto iou_thresh             = advance_toward_1(overlaps_nms.get_iou_thresh());
+            auto percent_covered_thresh = advance_toward_1(overlaps_nms.get_percent_covered_thresh());
+            overlaps_nms = test_box_overlap(iou_thresh, percent_covered_thresh);
+        }
+
+        void set_overlap_nms(const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& boxes)
+        {
+            // Convert from mmod_rect to rectangle so we can call
+            // find_tight_overlap_tester().
+            std::vector<std::vector<rectangle>> temp;
+            for (auto&& bi : boxes)
+            {
+                std::vector<rectangle> rtemp;
+                for (auto&& b : bi)
+                {
+                    if (b.first.ignore)
+                        continue;
+                    rtemp.push_back(b.first.rect);
                 }
                 temp.push_back(std::move(rtemp));
             }
@@ -890,6 +966,19 @@ namespace dlib
             return labels;
         }
 
+        static std::set<std::string> get_labels (
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& rects
+        )
+        {
+            std::set<std::string> labels;
+            for (auto& rr : rects)
+            {
+                for (auto& r : rr)
+                    labels.insert(r.first.label);
+            }
+            return labels;
+        }
+
         static std::vector<double> find_covering_aspect_ratios (
             const std::vector<std::vector<mmod_rect>>& rects,
             const test_box_overlap& overlaps,
@@ -906,6 +995,31 @@ namespace dlib
                 {
                     if (!b.ignore && b.label == label)
                         boxes.push_back(move_rect(set_rect_area(b.rect,400*400), point(0,0)));
+                }
+            }
+
+            std::vector<double> ratios;
+            for (auto r : find_rectangles_overlapping_all_others(boxes, overlaps))
+                ratios.push_back(r.width()/(double)r.height());
+            return ratios;
+        }
+
+        static std::vector<double> find_covering_aspect_ratios (
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& rects,
+            const test_box_overlap& overlaps,
+            const std::string& label
+        )
+        {
+            std::vector<rectangle> boxes;
+            // Make sure all the boxes have the same size and position, so that the only thing our
+            // checks for overlap will care about is aspect ratio (i.e. scale and x,y position are
+            // ignored).
+            for (auto& bb : rects)
+            {
+                for (auto&& b : bb)
+                {
+                    if (!b.first.ignore && b.first.label == label)
+                        boxes.push_back(move_rect(set_rect_area(b.first.rect,400*400), point(0,0)));
                 }
             }
 

@@ -202,6 +202,16 @@ namespace dlib
             train_one_step(data.begin(), data.end(), labels.begin());
         }
 
+        void train_one_step (
+            const std::vector<input_type>& data,
+            const std::vector<std::pair<training_label_type, std::vector<dlib::point>>>& labels
+        )
+        {
+            DLIB_CASSERT(data.size() == labels.size());
+
+            train_one_step(data.begin(), data.end(), labels.begin());
+        }
+
         template <
             typename data_iterator,
             typename label_iterator
