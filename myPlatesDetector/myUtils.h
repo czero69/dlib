@@ -544,9 +544,9 @@ namespace dlib
 
                 std::cout << "train to load count: " << trainToLoadCount << std::endl;
                 std::cout << "test to load count: " << testToLoadCount << std::endl;
-
+                //std::cout << "sizeof ..:arrrayType:.. " <<  std::to_string(sizeof(array_type)) << std::endl;
                 std::cout << "loading train from: " << tmpTrainPointer << ", to: " << tmpTrainPointer + trainToLoadCount << std::endl;
-                std::cout << "loading test from: " << tmpTestPointer << ", to: " << tmpTestPointer + trainToLoadCount << std::endl;
+                std::cout << "loading test from: " << tmpTestPointer << ", to: " << tmpTestPointer + testToLoadCount << std::endl;
                 // it is ok when tmpTrainPointer + trainToLoadCount exceeds the size trainingSetSize, load_image_dataset_subset will not load more than max size
                 load_image_dataset_subset(images_train, boxes_train, imageDatasetFileTraining, tmpTrainPointer, tmpTrainPointer + trainToLoadCount);
                 load_image_dataset_subset(images_test,  boxes_test,  imageDatasetFileTesting, tmpTestPointer , tmpTestPointer + testToLoadCount);
@@ -567,7 +567,6 @@ namespace dlib
                             b.rect.set_bottom(b.rect.bottom() / resizeImageFactor);
                         }
                     }
-
                     loadedSizeCurrentBatch += (unsigned long)(images_train[i].nc()) * (unsigned long)images_train[i].nr() * (unsigned long)(sizeof( array_type));
 
                 }

@@ -36,7 +36,7 @@
 using namespace std;
 using namespace dlib;
 
-bool DEBUG_IMSHOW = 1;
+bool DEBUG_IMSHOW = 0;
 
 
 // shrinked model5:
@@ -104,10 +104,11 @@ int main(int argc, char** argv) try
     std::vector<std::vector<mmod_rect>> boxes_train, boxes_test;
     std::vector<std::string> parts_list_train;
     std::vector<std::string> parts_list_test;
+
     //std::vector<std::vector<std::pair<dlib::mmod_rect, std::vector<dlib::point>>>> boxesPartsTrain, boxesPartsTest;
 
     // loads images to RAM, downsacles them, then loads images to RAM to fit all available space
-    imageLoader myImgLoader(training_filepath, testing_filepath);
+    imageLoader myImgLoader(training_filepath, testing_filepath, 32, 45, 0.9, 0.1, 2592, 2048, 2);
 
     // init load
     myImgLoader(images_train, images_test, boxes_train, boxes_test, parts_list_train, parts_list_test);
@@ -176,7 +177,7 @@ int main(int argc, char** argv) try
         num_overlapped_ignored += ignore_overlapped_boxes(v, test_box_overlap(0.50, 0.95));
         for (auto& bb : v)
         {
-            if (bb.rect.width() < 15 && bb.rect.height() < 15)
+            if (bb.rect.width() < 60 && bb.rect.height() < 15)
             {
                 if (!bb.ignore)
                 {
@@ -282,7 +283,7 @@ int main(int argc, char** argv) try
     trainer.set_iterations_without_progress_threshold(50000);
     trainer.set_test_iterations_without_progress_threshold(1000);
 
-    const string sync_filename = "mmod_plates_model5_sync";
+    const string sync_filename = "mmod_plates_model5_T3_sync";
     trainer.set_synchronization_file(sync_filename, std::chrono::minutes(5));
 
     std::vector<matrix<rgb_pixel>> mini_batch_samples;
@@ -306,16 +307,20 @@ int main(int argc, char** argv) try
 
     // load new images in roundRobin fashion every 5k iterations
     // this is due to ram limitations
-    const int CNT_RELOAD_IMAGES = 5000;
+    const int CNT_RELOAD_IMAGES = 10000;
 
     if(myImgLoader.checkRamIsNotEnough())
     {
         std::cout << "NOTE: Ram mem is not enough, images will be reloading in roundRobin fashion;" << std::endl;
     }
+    else {
+        std::cout << "Ram is enough for all images, no need for round robin loading;" << std::endl;
+    }
 
     while(trainer.get_learning_rate() >= 1e-4)
     {
         // Every 30 mini-batches we do a testing mini-batch.
+        //std::cout << "cnt : " << cnt << std::endl;
         if(cnt % CNT_RELOAD_IMAGES == 0)
             if(myImgLoader.checkRamIsNotEnough())
             {
@@ -326,7 +331,7 @@ int main(int argc, char** argv) try
         if (cnt%30 != 0 || images_test.size() == 0)
         {
             //cropper(27, images_train, boxes_train, mini_batch_samples, mini_batch_labels);
-            cropper(27, images_train, boxes_train, mini_batch_samples, mini_batch_labels);
+            cropper(57, images_train, boxes_train, mini_batch_samples, mini_batch_labels);
             // We can also randomly jitter the colors and that often helps a detector
             // generalize better to new images.
             for (auto&& img : mini_batch_samples)
@@ -348,7 +353,7 @@ int main(int argc, char** argv) try
         else
         {
             //cropper(27, images_test, boxes_test, mini_batch_samples, mini_batch_labels);
-            cropper(27, images_test, boxes_test, mini_batch_samples, mini_batch_labels);
+            cropper(57, images_test, boxes_test, mini_batch_samples, mini_batch_labels);
             // We can also randomly jitter the colors and that often helps a detector
             // generalize better to new images.
             for (auto&& img : mini_batch_samples)
@@ -364,7 +369,7 @@ int main(int argc, char** argv) try
 
     // Save the network to disk
     net.clean();
-    serialize("mmod_plates_model5_detector.dat") << net;
+    serialize("mmod_plates_model5_detector_T3.dat") << net;
 
 
     // It's a really good idea to print the training parameters.  This is because you will
@@ -388,7 +393,7 @@ int main(int argc, char** argv) try
 
     cout << "num testing images: "<< images_test.size() << endl;
     cout << "testing results: " << test_object_detection_function(net, images_test, boxes_test, test_box_overlap(), 0, options.overlaps_ignore);
-    upsample_image_dataset<pyramid_down<2>>(images_test, boxes_test, 1800*1800);
+    upsample_image_dataset<pyramid_down<2>>(images_test, boxes_test, 1200*1200);
     cout << "testing upsampled results: " << test_object_detection_function(net, images_test, boxes_test, test_box_overlap(), 0, options.overlaps_ignore);
 
     /*

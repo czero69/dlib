@@ -89,10 +89,10 @@ int main(int argc, char** argv) try
 
         if(img.nc() >= nominal_width/2 || img.nr() >= nominal_height/2)
         {
-            resize_image(0.3, img); // it makes swap, so RAM will go down from now
+            resize_image(0.5, img); // it makes swap, so RAM will go down from now
 
             for(int i = 0; i < 8; i++)
-                resize_image(0.3,  img_vec[i]);
+                resize_image(0.5,  img_vec[i]);
         }
 
     image_window win;
@@ -123,7 +123,7 @@ int main(int argc, char** argv) try
         net(img);
 
     // Record start time
-    /*
+
     auto startBatch = std::chrono::high_resolution_clock::now();
 
     // Portion of code to be timed
@@ -159,7 +159,7 @@ int main(int argc, char** argv) try
     cout << "Hit enter to view the intermediate processing steps" << endl;
     cin.get();
 
-    */
+
 
     // czy możemy zrobić regresję partsów zamiast regresję boxa ?
     // czy skip architecture da poprawę jakościową
