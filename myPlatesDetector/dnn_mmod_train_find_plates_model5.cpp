@@ -33,6 +33,8 @@
 
 #include <utility>
 
+#include <random>
+
 using namespace std;
 using namespace dlib;
 
@@ -85,6 +87,19 @@ int ignore_overlapped_boxes(
 
 // ----------------------------------------------------------------------------------------
 
+template <
+    typename array_type
+    >
+void copyVecFast(const std::vector<array_type>& original, std::vector<array_type>& output, int begin =0, int end=0)
+{
+  assert(end - begin > 0);
+  assert(end < original.size());
+
+  output.clear();
+  output.reserve(end - begin);
+  copy(original.begin() + begin ,original.begin() + end,back_inserter(output));
+}
+
 int main(int argc, char** argv) try
 {    
     if (argc != 3)
@@ -102,13 +117,14 @@ int main(int argc, char** argv) try
 
     std::vector<matrix<dlib::rgb_pixel>> images_train, images_test;
     std::vector<std::vector<mmod_rect>> boxes_train, boxes_test;
+
     std::vector<std::string> parts_list_train;
     std::vector<std::string> parts_list_test;
 
     //std::vector<std::vector<std::pair<dlib::mmod_rect, std::vector<dlib::point>>>> boxesPartsTrain, boxesPartsTest;
 
     // loads images to RAM, downsacles them, then loads images to RAM to fit all available space
-    imageLoader myImgLoader(training_filepath, testing_filepath, 32, 45, 0.9, 0.1, 2592, 2048, 2);
+    imageLoader myImgLoader(training_filepath, testing_filepath, 30, 45, 0.9, 0.40, 2592/2, 2048/2, 2);
 
     // init load
     myImgLoader(images_train, images_test, boxes_train, boxes_test, parts_list_train, parts_list_test);
@@ -280,11 +296,16 @@ int main(int argc, char** argv) try
     // test iterations without progress threshold will matter.  In particular, it says that
     // once we observe 1000 testing mini-batches where the test loss clearly isn't
     // decreasing we will lower the learning rate.
-    trainer.set_iterations_without_progress_threshold(50000);
+    trainer.set_iterations_without_progress_threshold(20000);
     trainer.set_test_iterations_without_progress_threshold(1000);
 
     const string sync_filename = "mmod_plates_model5_T3_sync";
     trainer.set_synchronization_file(sync_filename, std::chrono::minutes(5));
+
+    trainer.set_iterations_without_progress_threshold(40000);
+    trainer.set_test_iterations_without_progress_threshold(1000);
+    trainer.clear_average_loss();
+    trainer.set_learning_rate(0.01); // for fine tuning puprpose, @TODO remember to remove this line (!!!!!!!!!!!!!!!!!!!!!!!!!!!!!)
 
     std::vector<matrix<rgb_pixel>> mini_batch_samples;
     std::vector<std::vector<mmod_rect>> mini_batch_labels;
@@ -302,12 +323,13 @@ int main(int argc, char** argv) try
     // Log the training parameters to the console
     cout << trainer << cropper << endl;
 
+    //const int MINIBATCH_SIZE = 57;
     int cnt = 1;
     // Run the trainer until the learning rate gets small.
 
     // load new images in roundRobin fashion every 5k iterations
     // this is due to ram limitations
-    const int CNT_RELOAD_IMAGES = 10000;
+    const int CNT_RELOAD_IMAGES = 3500;
 
     if(myImgLoader.checkRamIsNotEnough())
     {
@@ -316,6 +338,10 @@ int main(int argc, char** argv) try
     else {
         std::cout << "Ram is enough for all images, no need for round robin loading;" << std::endl;
     }
+    // I have started stronlgy susptecting some dlib rng
+    // I have two clues already that sth is wrong and
+    // it seems to pick some data much more ofthen (!)
+    // thaths why we use own rnd for randoming
 
     while(trainer.get_learning_rate() >= 1e-4)
     {
@@ -326,11 +352,15 @@ int main(int argc, char** argv) try
             {
                 std::cout << "reloading images " << std::endl;
                 myImgLoader(images_train, images_test, boxes_train , boxes_test, parts_list_train, parts_list_test);
+                trainer.clear_average_loss(); // if your model reloads ralely dataset in a ram, consider uncommenting this line
+                // case is, after rund robin ram-datset reload step, your loss will probably increase
+                // especially in the case, when you ale training on one ramsize-batch for a long time
             }
 
         if (cnt%30 != 0 || images_test.size() == 0)
         {
             //cropper(27, images_train, boxes_train, mini_batch_samples, mini_batch_labels);
+
             cropper(57, images_train, boxes_train, mini_batch_samples, mini_batch_labels);
             // We can also randomly jitter the colors and that often helps a detector
             // generalize better to new images.
@@ -369,7 +399,7 @@ int main(int argc, char** argv) try
 
     // Save the network to disk
     net.clean();
-    serialize("mmod_plates_model5_detector_T3.dat") << net;
+    serialize("mmod_plates_model5_detector_T3-v3.dat") << net;
 
 
     // It's a really good idea to print the training parameters.  This is because you will
@@ -387,8 +417,8 @@ int main(int argc, char** argv) try
     // limit of 1800*1800 here which means "don't upsample an image if it's already larger
     // than 1800*1800".  We do this so we don't run out of RAM, which is a concern because
     // some of the images in the dlib vehicle dataset are really high resolution.
-    upsample_image_dataset<pyramid_down<2>>(images_train, boxes_train, 1800*1800);
-    cout << "training upsampled results: " << test_object_detection_function(net, images_train, boxes_train, test_box_overlap(), 0, options.overlaps_ignore);
+    //upsample_image_dataset<pyramid_down<2>>(images_train, boxes_train, 1200*1200);
+    //cout << "training upsampled results: " << test_object_detection_function(net, images_train, boxes_train, test_box_overlap(), 0, options.overlaps_ignore);
 
 
     cout << "num testing images: "<< images_test.size() << endl;

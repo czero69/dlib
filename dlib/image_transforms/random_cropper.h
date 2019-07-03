@@ -11,6 +11,8 @@
 #include "../image_processing/full_object_detection.h"
 #include "../rand.h"
 
+#include <random> // better randomization
+
 namespace dlib
 {
     class random_cropper
@@ -26,7 +28,25 @@ namespace dlib
 
         std::mutex rnd_mutex;
         dlib::rand rnd;
+
+        std::mt19937 mt19937_eng;
+
+        std::uniform_int_distribution<> my_distribution_image_size_range;
+
+
     public:
+
+        random_cropper(){
+            std::random_device rd;  // obtain a random number from hardware
+            mt19937_eng = std::mt19937(rd()); // seed the generator
+            set_myUniformDistRange(1);
+        }
+
+        void set_myUniformDistRange ( int imagesCount )
+        {
+            my_distribution_image_size_range = std::uniform_int_distribution<>(0, imagesCount - 1);
+            // std::cout << "my_distribution_image_size_range sucessfully set;" << std::endl;
+        }
 
         void set_seed (
             time_t seed
@@ -195,7 +215,12 @@ namespace dlib
             DLIB_CASSERT(images.size() == rects.size());
             size_t idx;
             { std::lock_guard<std::mutex> lock(rnd_mutex);
-                idx = rnd.get_integer(images.size());
+                //idx = rnd.get_integer(images.size());
+                if(my_distribution_image_size_range.max() != images.size() - 1)
+                {
+                    set_myUniformDistRange(images.size());
+                }
+                idx = my_distribution_image_size_range(mt19937_eng);
             }
             (*this)(images[idx], rects[idx], crop, crop_rects);
         }
@@ -214,7 +239,12 @@ namespace dlib
             DLIB_CASSERT(images.size() == rects.size());
             size_t idx;
             { std::lock_guard<std::mutex> lock(rnd_mutex);
-                idx = rnd.get_integer(images.size());
+                //idx = rnd.get_integer(images.size());
+                if(my_distribution_image_size_range.max() != images.size() - 1)
+                {
+                    set_myUniformDistRange(images.size());
+                }
+                idx = my_distribution_image_size_range(mt19937_eng);
             }
             (*this)(images[idx], rects[idx], crop, crop_rects);
         }

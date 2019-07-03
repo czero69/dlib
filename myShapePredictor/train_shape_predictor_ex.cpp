@@ -106,7 +106,7 @@ int main(int argc, char** argv)
         // I'm also reducing the capacity of the model by explicitly increasing
         // the regularization (making nu smaller) and by using trees with
         // smaller depths.  
-        trainer.set_nu(0.35);
+        trainer.set_nu(0.1);
         trainer.set_tree_depth(7);
 
         //trainer.set_nu(0.05);

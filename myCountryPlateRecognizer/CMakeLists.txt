@@ -1,12 +1,6 @@
-# This is a CMake makefile.  CMake is a tool that helps you build C++ programs.
-# You can download CMake from http://www.cmake.org.  This CMakeLists.txt file
-# you are reading builds dlib's example programs. 
-#
-
-
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 2.8.12)
 # Every project needs a name.  We call this the "examples" project.
-project(examples)
+project(myPlatesCountryRecognitions)
 
 set (CMAKE_CXX_STANDARD 17)
 
@@ -30,8 +24,6 @@ endif()
 #set(Boost_USE_STATIC_RUNTIME ON)
 #find_package(Boost COMPONENTS filesystem system locale REQUIRED)
 #find_package(OpenCV REQUIRED )
-
-
 
 # Tell cmake we will need dlib.  This command will pull in dlib and compile it
 # into your project.  Note that you don't need to compile or install dlib.  All
@@ -88,8 +80,11 @@ add_subdirectory(../dlib dlib_build)
 # Since there are a lot of examples I'm going to use a macro to simplify this
 # CMakeLists.txt file.  However, usually you will create only one executable in
 # your cmake projects and use the syntax shown above.
+
+set(HEADER_FILES ../myPlatesDetector/myUtils.h)
+
 macro(add_example name)
-   add_executable(${name} ${name}.cpp)
+   add_executable(${name} ${name}.cpp ${HEADER_FILES})
    target_link_libraries(${name} dlib::dlib )
    target_link_libraries(${name} ${OpenCV_LIBS} )
    target_link_libraries(${name} Threads::Threads) 
@@ -121,6 +116,11 @@ endmacro()
 # like this:
 #   cmake .. -G "Visual Studio 14 2015 Win64" -T host=x64 
 if (NOT USING_OLD_VISUAL_STUDIO_COMPILER)
+   add_gui_example(dnn_countryRecognition)
+   add_gui_example(dnn_countryRecognition-v2)
+   add_gui_example(dnn_countryRec_test)
+   #add_gui_example(dnn_mmod_train_find_plates_model5)
+   #add_gui_example(dnn_mmod_train_find_plates_model5-skip)
    # add_example(dnn_metric_learning_ex)
    # add_gui_example(dnn_face_recognition_ex)
    # add_example(dnn_introduction_ex)
@@ -131,13 +131,14 @@ if (NOT USING_OLD_VISUAL_STUDIO_COMPILER)
    # add_gui_example(random_cropper_ex)
    # add_gui_example(dnn_mmod_dog_hipsterizer)
    # add_gui_example(dnn_imagenet_ex)
-   # add_gui_example(dnn_mmod_find_cars_ex)
-   # add_gui_example(dnn_mmod_find_cars2_ex)
+   #add_gui_example(dnn_mmod_find_cars_ex)
+   #add_gui_example(dnn_mmod_find_cars2_ex)
    # add_example(dnn_mmod_train_find_cars_ex)
-   add_gui_example(face_landmark_detection_ex)
+   #add_gui_example(dnn_semantic_segmentation_ex)
    # add_example(dnn_imagenet_train_ex)
-   add_example(train_shape_predictor_ex)
+   #add_example(dnn_semantic_segmentation_train_ex)
    # add_example(dnn_metric_learning_on_images_ex)
+   #add_gui_example(train_shape_predictor_ex)
 endif()
 
 

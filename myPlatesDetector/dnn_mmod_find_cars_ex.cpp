@@ -119,7 +119,7 @@ int main(int argc, char** argv) try
     // Record start time
 
     // warmup
-    for(int i = 0; i < 50; i++)
+    /*for(int i = 0; i < 50; i++)
         net(img);
 
     // Record start time
@@ -154,7 +154,7 @@ int main(int argc, char** argv) try
     std::cout << "Elapsed time per img: " << elapsed.count()/100 << " s\n";
 
     //std::vector<matrix<rgb_pixel>> imgVec;
-
+    */
 
     cout << "Hit enter to view the intermediate processing steps" << endl;
     cin.get();

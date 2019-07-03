@@ -52,6 +52,8 @@ int main() try
     image_window win;
     win.set_image(img);
 
+    net.process(img, -0.5);
+
     // Run the detector on the image and show us the output.
     for (auto&& d : net(img))
     {
