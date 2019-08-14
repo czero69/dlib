@@ -40,6 +40,7 @@ namespace dlib
         void set_current_device_blocking_sync(
         )
         {
+            // @TODO tmp comment below, just for 100%  sure it is not called
             CHECK_CUDA(cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync));
         }
 

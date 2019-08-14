@@ -65,6 +65,7 @@ namespace dlib
 
         virtual const float* host() const = 0;
         virtual float*       host() = 0; 
+        virtual const float* getDeviceDataPointer() const = 0;
         virtual float*       host_write_only() = 0;
         virtual const float* device() const = 0;
         virtual float*       device() = 0;
@@ -335,6 +336,7 @@ namespace dlib
 
         virtual const float* host() const { return data_instance.host(); }
         virtual float*       host()       { return data_instance.host(); }
+        virtual const float* getDeviceDataPointer() const { return data_instance.getDeviceDataPointer(); }
         virtual float*       host_write_only() { return data_instance.host_write_only(); }
         virtual const float* device() const { return data_instance.device(); }
         virtual float*       device()       { return data_instance.device(); }
@@ -535,6 +537,7 @@ namespace dlib
 
         virtual const float* host() const { return data_instance->host()+data_offset; }
         virtual float*       host()       { return data_instance->host()+data_offset; }
+        virtual const float* getDeviceDataPointer() const { return data_instance->getDeviceDataPointer()+data_offset; }
         virtual float*       host_write_only()    { return data_instance->host()+data_offset; }
         virtual const float* device() const { return data_instance->device()+data_offset; }
         virtual float*       device()       { return data_instance->device()+data_offset; }

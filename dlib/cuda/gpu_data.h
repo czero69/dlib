@@ -40,7 +40,7 @@ namespace dlib
     public:
 
         gpu_data(
-        ) : data_size(0), host_current(true), device_current(true),have_active_transfer(false),device_in_use(false), the_device_id(0)
+        ) : data_size(0), host_current(true), device_current(true),have_active_transfer(false),device_in_use(false), the_device_id(0), myFullTensorsDeviceToHostCpy(true)
         {
         }
 
@@ -53,6 +53,7 @@ namespace dlib
         gpu_data& operator=(gpu_data&& item) { swap(item); return *this; }
 
         int device_id() const { return the_device_id; }
+        void set_myFullTensorsDeviceToHostCpy(bool val) {myFullTensorsDeviceToHostCpy = val;}
 
 #ifdef DLIB_USE_CUDA
         void async_copy_to_device() const; 
@@ -95,6 +96,11 @@ namespace dlib
             copy_to_host();
             device_current = false;
             return data_host.get(); 
+        }
+
+        const float* getDeviceDataPointer() const
+        {
+            return data_device.get();
         }
 
         float* host_write_only() 
@@ -169,6 +175,7 @@ namespace dlib
         void wait_for_transfer_to_finish() const{}
 #endif
 
+        mutable bool myFullTensorsDeviceToHostCpy;
 
         size_t data_size;
         mutable bool host_current;

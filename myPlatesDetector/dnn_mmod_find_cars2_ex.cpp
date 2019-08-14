@@ -22,6 +22,7 @@
 #include <dlib/gui_widgets.h>
 #include <dlib/image_processing.h>
 
+
 using namespace std;
 using namespace dlib;
 
@@ -51,6 +52,9 @@ int main() try
 
     image_window win;
     win.set_image(img);
+
+    // this is how you can set probability threshold for detector
+    // or for batches process_batch
 
     net.process(img, -0.5);
 
