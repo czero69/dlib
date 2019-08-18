@@ -59,6 +59,9 @@ template <typename SUBNET> using res_down  = relu<residual_down<block,8,bn_con,S
 template <typename SUBNET> using ares_down = relu<residual_down<block,8,affine,SUBNET>>;
 
 std::vector <std::string> countries = {
+  "AL",
+  "A",
+  "B",
   "BY",
   "CH",
   "CZ",
@@ -66,13 +69,17 @@ std::vector <std::string> countries = {
   "E",
   "EST",
   "F",
+  "FIN",
   "GB",
+  "GR",
   "H",
   "I",
   "KZ",
+  "L",
   "LT",
   "LV",
   "MC",
+  "N",
   "NL",
   "PL",
   "RO",
@@ -86,7 +93,7 @@ std::vector <std::string> isMultilineVec = {"0", "1"};
 std::map<std::string, std::vector<std::string> > labels = {{"country", countries}, {"isMultiline", isMultilineVec}};
 loss_multimulticlass_log_ myloss(labels);
 
-const int number_of_classes = 23;
+const int number_of_classes = 30;
 
 using net_type = loss_multimulticlass_log<fc<number_of_classes,
                             avg_pool_everything<
@@ -115,27 +122,34 @@ void copyVecFast(const std::vector<array_type>& original, std::vector<array_type
 
 
 std::map<int, std::string> lpCountryCodes = {
-  { 0, "BY" },
-  { 1, "CH"},
-  { 2, "CZ" },
-  { 3, "D" },
-  { 4, "E" },
-  { 5, "EST"},
-  { 6, "F" },
-  { 7, "GB" },
-  { 8, "H" },
-  { 9, "I" },
-  { 10, "KZ" },
-  { 11, "LT" },
-  { 12, "LV" },
-  { 13, "MC" },
-  { 14, "NL" },
-  { 15, "PL" },
-  { 16, "RO" },
-  { 17, "RUS" },
-  { 18, "S"},
-  { 19, "SK" },
-  { 20, "UA" }
+  { 0, "AL" },
+  { 1, "A"},
+  { 2, "B" },
+  { 3, "BY" },
+  { 4, "CH" },
+  { 5, "CZ"},
+  { 6, "D" },
+  { 7, "E" },
+  { 8, "EST" },
+  { 9, "F" },
+  { 10, "FIN" },
+  { 11, "GB" },
+  { 12, "GR" },
+  { 13, "H" },
+  { 14, "I" },
+  { 15, "KZ" },
+  { 16, "L" },
+  { 17, "LT" },
+  { 18, "LV"},
+  { 19, "MC" },
+  { 20, "N" },
+  { 21, "NL" },
+  { 22, "PL" },
+  { 23, "RO" },
+  { 24, "RUS" },
+  { 25, "S" },
+  { 26, "SK" },
+  { 27, "UA" },
 };
 
 
@@ -300,8 +314,8 @@ int main(int argc, char** argv) try
   cout<<"TrainMulti: "<<training_images.size()<<" "<<training_labels.size()<<endl;
 
 
-  trainingLabelsCount = load_images(training_images, country_training_labels, dirnameTrainSingle, dlib::datasets_utils::TRAIN, 10);
-  testingLabelsCount = load_images(testing_images, country_testing_labels, dirnameTestSingle, dlib::datasets_utils::TEST, 10);
+  trainingLabelsCount = load_images(training_images, country_training_labels, dirnameTrainSingle, dlib::datasets_utils::TRAIN, 5);
+  testingLabelsCount = load_images(testing_images, country_testing_labels, dirnameTestSingle, dlib::datasets_utils::TEST, 5);
 
   for(int i = trainMultiSize; i < country_training_labels.size(); ++i)
   {
@@ -468,7 +482,7 @@ int main(int argc, char** argv) try
   // from scratch.  This is because, when the program restarts, this call to
   // set_synchronization_file() will automatically reload the settings from mnist_sync if
   // the file exists.
-  trainer.set_synchronization_file(("full_corec_isMulti_multiSkip5_singleSkip10_sync"), std::chrono::seconds(20));
+  trainer.set_synchronization_file(("co_multi_rec_v2_sync"), std::chrono::seconds(20));
   trainer.set_iterations_without_progress_threshold(10000);
   trainer.set_test_iterations_without_progress_threshold(1000);
   // Finally, this line begins training.  By default, it runs SGD with our specified
@@ -574,7 +588,7 @@ int main(int argc, char** argv) try
   // about that kind of transient data so that our file will be smaller.  We do this by
   // "cleaning" the network before saving it.
   net.clean();
-  serialize("full_corec_isMulti_multiSkip5_singleSkip10.dat") << net;
+  serialize("co_multi_rec_v2.dat") << net;
   // Now if we later wanted to recall the network from disk we can simply say:
   // deserialize("mnist_network.dat") >> net;
 

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8.12)
 # Every project needs a name.  We call this the "examples" project.
 project(myPlatesCountryRecognitions)
 
-set (CMAKE_CXX_STANDARD 17)
+set (CMAKE_CXX_STANDARD 11)
 
 # need for static Tesseract
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -36,10 +36,10 @@ add_subdirectory(../dlib dlib_build)
 # of the output executable and then a list of .cpp files to compile.  Here we
 # are going to compile one of the dlib example programs which has only one .cpp
 # file, assignment_learning_ex.cpp.  If your program consisted of multiple .cpp
-# files you would simply list them here in the add_executable() statement.  
+# files you would simply list them here in the add_executable() statement.
 ## add_executable(assignment_learning_ex assignment_learning_ex.cpp)
 # Finally, you need to tell CMake that this program, assignment_learning_ex,
-# depends on dlib.  You do that with this statement: 
+# depends on dlib.  You do that with this statement:
 ##target_link_libraries(assignment_learning_ex dlib::dlib)
 
 
@@ -87,7 +87,7 @@ macro(add_example name)
    add_executable(${name} ${name}.cpp ${HEADER_FILES})
    target_link_libraries(${name} dlib::dlib )
    target_link_libraries(${name} ${OpenCV_LIBS} )
-   target_link_libraries(${name} Threads::Threads) 
+   target_link_libraries(${name} Threads::Threads)
 endmacro()
 
 # if an example requires GUI, call this macro to check DLIB_NO_GUI_SUPPORT to include or exclude
@@ -114,10 +114,11 @@ endmacro()
 # THE COMPILER TO ONLY 2GB OF RAM, causing it to run out of RAM and crash when
 # compiling some of the DNN examples.  So generate your project with a statement
 # like this:
-#   cmake .. -G "Visual Studio 14 2015 Win64" -T host=x64 
+#   cmake .. -G "Visual Studio 14 2015 Win64" -T host=x64
 if (NOT USING_OLD_VISUAL_STUDIO_COMPILER)
    add_gui_example(dnn_countryRecognition)
    add_gui_example(dnn_countryRecognition-v2)
+   add_gui_example(dnn_countryRecognition-v3)
    add_gui_example(dnn_countryRec_test)
    #add_gui_example(dnn_mmod_train_find_plates_model5)
    #add_gui_example(dnn_mmod_train_find_plates_model5-skip)
@@ -158,6 +159,4 @@ endif()
 
 
 
-#here we apply our macros 
-
-
+#here we apply our macros
