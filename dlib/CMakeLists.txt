@@ -742,7 +742,18 @@ if (NOT TARGET dlib)
          endif()
 
          if (CUDA_FOUND AND cudnn AND (NOT USING_OLD_VISUAL_STUDIO_COMPILER) AND cuda_test_compile_worked AND cudnn_test_compile_worked AND cudnn_include)
-            set(source_files ${source_files} 
+            #cuda_add_library( hellocuda SHARED cuda/myCuda_tensorToDets.cu)
+
+            #cuda_add_library(dlib cuda/myCuda_tensorToDets.cu)
+            #set_target_properties(hellocuda PROPERTIES PUBLIC_HEADER cuda/myCuda_tensorToDets.h)
+
+            #target_link_libraries(dlib ${hellocuda})
+            #set(dlib_needed_includes ${dlib_needed_includes} cuda/myCuda_tensorToDets.h)
+            #set(dlib_needed_libraries ${dlib_needed_libraries}
+            #    ${hellocuda}
+            #    )
+
+            set(source_files ${source_files}
                cuda/cuda_dlib.cu 
                cuda/cudnn_dlibapi.cpp
                cuda/cublas_dlibapi.cpp
@@ -750,7 +761,12 @@ if (NOT TARGET dlib)
                cuda/curand_dlibapi.cpp
                cuda/cuda_data_ptr.cpp
                cuda/gpu_data.cpp
+               cuda/myCuda_tensorToDets.cu
+               #cuda/helper_cuda.h
+               #cuda/helper_functions.h
+               #cuda/helper_string.h
                )
+
             set(dlib_needed_libraries ${dlib_needed_libraries} 
                ${CUDA_CUBLAS_LIBRARIES} 
                ${cudnn}
@@ -820,6 +836,7 @@ if (NOT TARGET dlib)
 
    endif ()  ##### end of if NOT DLIB_ISO_CPP_ONLY ##########################################################
 
+   #set_target_properties(dlib PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
    target_include_directories(dlib
       INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
@@ -847,7 +864,6 @@ if (NOT TARGET dlib)
       target_compile_options(dlib PRIVATE "-DDLIB_CHECK_FOR_VERSION_MISMATCH=${DLIB_CHECK_FOR_VERSION_MISMATCH}")
    endif()
 
-
    # Allow the unit tests to ask us to compile the all/source.cpp file just to make sure it compiles.
    if (DLIB_TEST_COMPILE_ALL_SOURCE_CPP)
       add_library(dlib_all_source_cpp STATIC all/source.cpp) 
@@ -866,6 +882,7 @@ if (NOT TARGET dlib)
    endif()
 
    # Install the library
+
    if (NOT DLIB_IN_PROJECT_BUILD)
       set_target_properties(dlib PROPERTIES
          VERSION ${VERSION})

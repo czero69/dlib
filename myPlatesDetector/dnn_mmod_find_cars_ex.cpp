@@ -31,6 +31,8 @@
 
 #include <chrono>  // for high_resolution_clock
 
+#include <dlib/cuda/myCuda_tensorToDets.h>
+
 using namespace std;
 using namespace dlib;
 
@@ -56,7 +58,27 @@ using net_type = loss_mmod<con<1,9,9,1,1,rcon5<downsampler<input_rgb_image_pyram
 
 int main(int argc, char** argv) try
 {
-    net_type net;
+    // trying options ---------------------------------------
+
+    cuda::cudaDeviceScheduleMode::Choice myMode = cuda::cudaDeviceScheduleMode::Choice::Yield;
+    cuda::set_flag_cudaDeviceSchedule(myMode);
+    mmod_options options;
+
+
+    options.use_bounding_box_regression = false;
+
+    // net_type net;
+    net_type net(options);
+
+    // The final layer of the network must be a con layer that contains
+    // options.detector_windows.size() filters.  This is because these final filters are
+    // what perform the final "sliding window" detection in the network.  For the dlib
+    // vehicle dataset, there will be 3 sliding window detectors, so we will be setting
+    // num_filters to 3 here.
+
+    //net.subnet().layer_details().set_num_filters(options.detector_windows.size() * 5);
+
+    ///    ------------------------------------------------
     //shape_predictor sp;
     // You can get this file from http://dlib.net/files/mmod_rear_end_vehicle_detector.dat.bz2
     // This network was produced by the dnn_mmod_train_find_cars_ex.cpp example program.
@@ -76,6 +98,11 @@ int main(int argc, char** argv) try
 
     deserialize(detectorPath) >> net;
 
+    std::cout << " net.subnet().get_output().k() :" <<  net.subnet().get_output().k() << std::endl;
+    std::cout << " net.subnet().layer_details().get_layer_params().k() :" <<  net.subnet().layer_details().get_layer_params().k() << std::endl;
+    // net.subnet().get_output().k() ;
+    //net.subnet().layer_details().set_num_filters(7);
+
     matrix<rgb_pixel> img;
     load_image(img, imgPath);
 
@@ -84,8 +111,9 @@ int main(int argc, char** argv) try
     for(int i = 0; i < 8; i++)
         load_image(img_vec[i], imgPath);
 
-    const int nominal_width = 2592;
-    const int nominal_height = 2048;
+    // WARNING - INPUT IMAGE IS SCALED HERE - BE AWARE (!)
+    const int nominal_width = 1 * 2592;
+    const int nominal_height = 1 * 2048;
 
         if(img.nc() >= nominal_width/2 || img.nr() >= nominal_height/2)
         {
@@ -99,6 +127,8 @@ int main(int argc, char** argv) try
     win.set_image(img);
 
     // Run the detector on the image and show us the output.
+
+
     for (auto&& d : net(img))
     {
         // We use a shape_predictor to refine the exact shape and location of the detection
@@ -119,43 +149,63 @@ int main(int argc, char** argv) try
     // Record start time
 
     // warmup
-    /*for(int i = 0; i < 50; i++)
+    std::cout << "-------warmup ---------" << std::endl;
+    for(int i = 0; i < 5; i++)
         net(img);
+
+    std::cout << "aw net.subnet().get_output().k() :" <<  net.subnet().get_output().k() << std::endl;
+    std::cout << "aw net.subnet().layer_details().get_layer_params().k() :" <<  net.subnet().layer_details().get_layer_params().k() << std::endl;
 
     // Record start time
 
+    std::cout << "-------END warmup ---------" << std::endl << std::endl;
+
+    /*
+    std::cout << "-------BATCH TEST ---------" << std::endl;
+
+    net.clean();
     auto startBatch = std::chrono::high_resolution_clock::now();
 
     // Portion of code to be timed
 
     std::vector<std::vector<dlib::mmod_rect>> v_ret;
 
-    for(int i = 0; i < 25; i++)
-        v_ret = net(img_vec);
+    const int BATCH_TEST_COUNT = 2;
 
+    for(int i = 0; i < BATCH_TEST_COUNT; i++)
+        v_ret = net(img_vec);
     // Record end time
     auto finishBatch = std::chrono::high_resolution_clock::now();
 
     std::chrono::duration<double> elapsedBatch = finishBatch - startBatch;
-    std::cout << "Elapsed time per 8x Batch img: " << elapsedBatch.count()/(25*8) << " s\n";
+    std::cout << "Elapsed time per 8x Batch img: " << elapsedBatch.count()/(BATCH_TEST_COUNT*img_vec.size()) << " s\n";
 
+    std::cout << "-------END BATCH TEST ---------" << std::endl << std::endl;
+    */
     //record start time
+
+    std::cout << "-------SINGLE TEST ---------" << std::endl;
+    // net.clean(); // --
 
     auto start = std::chrono::high_resolution_clock::now();
 
+    const int NORMAL_TEST_COUNT = 1;
+
     // Portion of code to be timed
-    for(int i = 0; i < 100; i++)
-        net(img);
+    for(int i = 0; i < NORMAL_TEST_COUNT; i++)
+        net.process(img, -0.5); //net(img);
 
     // Record end time
     auto finish = std::chrono::high_resolution_clock::now();
 
     std::chrono::duration<double> elapsed = finish - start;
-    std::cout << "Elapsed time per img: " << elapsed.count()/100 << " s\n";
+    std::cout << "Elapsed time per img: " << elapsed.count()/NORMAL_TEST_COUNT << " s\n";
+
+    std::cout << "-------END SINGLE TEST ---------" << std::endl;
 
     //std::vector<matrix<rgb_pixel>> imgVec;
-    */
 
+    exit(0);
     cout << "Hit enter to view the intermediate processing steps" << endl;
     cin.get();
 

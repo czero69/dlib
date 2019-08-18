@@ -62,7 +62,7 @@ const unsigned long number_of_classes = 10;
 using net_type = loss_multiclass_log<fc<number_of_classes,
                             avg_pool_everything<
                             res<res<res<res_down<
-                            repeat<1,res, // repeat this layer 9 times
+                            repeat<1,res, // repeat this layer x1 times
                             res_down<
                             res<
                             input<matrix<unsigned char>>

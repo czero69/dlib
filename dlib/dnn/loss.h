@@ -14,6 +14,17 @@
 #include <sstream>
 #include <map>
 
+// TIME MEASURE
+// #include <chrono>
+// end TIME MEASURE
+#include "tbb/tbb.h"
+
+#include "../cuda/myCuda_tensorToDets.h"
+
+//#include "../cuda/cuda_utils.h"
+//#include "../cuda/cuda_dlib.h"
+//#include "../cuda/cudnn_dlibapi.h"
+
 namespace dlib
 {
 
@@ -1183,10 +1194,16 @@ namespace dlib
             output_label_type final_dets;
             for (long i = 0; i < output_tensor.num_samples(); ++i)
             {
-                tensor_to_dets(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
+                tensor_to_dets_parallel(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
+
+                // to-label checking cout
+                // std::cout << "we are making this method to_label !!! " << std::endl;
+                // end to-label checking cout
 
                 // Do non-max suppression
                 final_dets.clear();
+
+                // my-TODO @here potentially use tbb
                 for (unsigned long i = 0; i < dets_accum.size(); ++i)
                 {
                     if (overlaps_any_box_nms(final_dets, dets_accum[i].rect_bbr))
@@ -1243,7 +1260,7 @@ namespace dlib
             std::vector<intermediate_detection> dets;
             for (long i = 0; i < output_tensor.num_samples(); ++i)
             {
-                tensor_to_dets(input_tensor, output_tensor, i, dets, -options.loss_per_false_alarm + det_thresh_speed_adjust, sub);
+                tensor_to_dets_parallel(input_tensor, output_tensor, i, dets, -options.loss_per_false_alarm + det_thresh_speed_adjust, sub);
 
                 const unsigned long max_num_dets = 50 + truth->size()*5;
                 // Prevent calls to tensor_to_dets() from running for a really long time
@@ -1529,6 +1546,9 @@ namespace dlib
             const net_type& net 
         ) const
         {
+            // TIME MEASURE
+            // auto startTime = std::chrono::high_resolution_clock::now();
+            // end TIME MEASURE
             DLIB_CASSERT(net.sample_expansion_factor() == 1,net.sample_expansion_factor());
             if (options.use_bounding_box_regression)
             {
@@ -1582,6 +1602,198 @@ namespace dlib
                     }
                 }
             }
+            std::sort(dets_accum.rbegin(), dets_accum.rend());
+
+            // TIME MEASURE
+            // auto finishTime = std::chrono::high_resolution_clock::now();
+            // std::chrono::duration<double> elapsedTime = finishTime - startTime;
+            // std::cout << "Elapsed time for tensor_to_dets: " << elapsedTime.count() * 1000 << " ms\n";
+            // end TIME MEASURE
+        }
+
+        template <typename net_type>
+        void tensor_to_dets_parallel (
+            const tensor& input_tensor,
+            const tensor& output_tensor,
+            long i,
+            std::vector<intermediate_detection>& dets_accum,
+            double adjust_threshold,
+            const net_type& net
+        ) const
+        {
+            DLIB_CASSERT(net.sample_expansion_factor() == 1,net.sample_expansion_factor());
+            if (options.use_bounding_box_regression)
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size()*5);
+            }
+            else
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size());
+            }
+
+            // CUDA KERNEL TEST
+
+            // optimisation here is: instead of post-processing on cpu, do post-processing (rect searching) in cuda directly,
+            // and return only rects metadata wich is usually much much less in SIZE than full tensor feature maps/layers
+            // myFullTensorsDeviceToHostCpy On False will run on cuda Kernel and will avoid large host copy (cudaMemCopy 8MB, 30MB, how large your image is(?))
+            // if you set true cuda kernel will not be used, huge copy cudamemcopy will be performed, and tbb will be used to search rects on cpu (some speed-up also, but remember,
+            // avoiding huge HtoD copies is bigger deal here
+            bool myFullTensorsDeviceToHostCpy = false;
+            if(! myFullTensorsDeviceToHostCpy)
+            {
+            std::vector<intermediate_detection> dets_from_myCpy;
+
+            // TIME MEASURE
+            // auto startTime_devThresh = std::chrono::high_resolution_clock::now();
+            // end TIME MEASURE -----
+
+
+            std::vector<MyRectAndOffset> myRects;
+            const float* dev_data = output_tensor.getDeviceDataPointer() + output_tensor.k()*output_tensor.nr()*output_tensor.nc()*i; // data pointer in device (gpu)
+            const long int nr_m_nc = output_tensor.nr()*output_tensor.nc();
+            const size_t det_win_size = options.detector_windows.size();
+
+            cuda::get_rects_from_device2host(myRects, dev_data, nr_m_nc, det_win_size, adjust_threshold, options.use_bounding_box_regression);
+
+            // TIME MEASURE
+            //auto endTime_devThresh = std::chrono::high_resolution_clock::now();
+            //std::chrono::duration<double> elapsedTime_devThresh = endTime_devThresh - startTime_devThresh;
+            //std::cout << "Elapsed time for _devThresh: " << elapsedTime_devThresh.count() * 1000 << " ms\n";
+            // end TIME MEASURE -----
+
+            for (auto && mr : myRects)
+            {
+                //std::cout << "myRects r.i: " << r.i << std::endl;
+                //std::cout << "myRects r.dh: " << r.dh << std::endl;
+
+                // get r and c indexes back from "i" index
+                int i_modulated = mr.i - mr.k*nr_m_nc;
+                int c = i_modulated % output_tensor.nc();
+                int r =  (i_modulated - c) / output_tensor.nc();
+                dpoint p = output_tensor_to_input_tensor(net, point(c,r));
+                drectangle rect = centered_drect(p, options.detector_windows[mr.k].width, options.detector_windows[mr.k].height);
+                rect = input_layer(net).tensor_space_to_image_space(input_tensor,rect);
+
+                dets_from_myCpy.push_back(intermediate_detection(rect, mr.score, (mr.k*output_tensor.nr() + r)*output_tensor.nc() + c, mr.k));
+                if (options.use_bounding_box_regression)
+                {
+                    dets_from_myCpy.back().tensor_offset_dx = mr.dx;
+                    dets_from_myCpy.back().tensor_offset_dy = mr.dy;
+                    dets_from_myCpy.back().tensor_offset_dw = mr.dw;
+                    dets_from_myCpy.back().tensor_offset_dh = mr.dh;
+                }
+            }
+
+            dets_accum = dets_from_myCpy ;
+            }
+            // ----------------
+
+            if(myFullTensorsDeviceToHostCpy)
+            {
+            auto startTime_out_data = std::chrono::high_resolution_clock::now();
+            // const int tens_depth = output_tensor.k();
+            // const auto additionalOffset = options.detector_windows.size() + k*4;
+
+            ///// -----
+            const float* out_data = output_tensor.host() + output_tensor.k()*output_tensor.nr()*output_tensor.nc()*i;
+            ///// -----
+            ///
+
+            // TIME MEASURE
+            //auto finishTime_out_data = std::chrono::high_resolution_clock::now();
+            //std::chrono::duration<double> elapsedTime_out_data = finishTime_out_data - startTime_out_data;
+            //std::cout << "Elapsed time for out_data: " << elapsedTime_out_data.count() * 1000 << " ms\n";
+            // end TIME MEASURE
+
+            // scan the final layer and output the positive scoring locations
+            // @TODO check output_tensor.device() for cuda implementation
+            dets_accum.clear();
+            tbb::concurrent_vector<intermediate_detection> concurrent_dets_accum;
+
+            // TIME MEASURE
+            // auto startTime = std::chrono::high_resolution_clock::now();
+            // end IME MEASURE
+
+            //for (long k = 0; k < (long)options.detector_windows.size(); ++k)
+            tbb::parallel_for(tbb::blocked_range<size_t>(0, (size_t)options.detector_windows.size()),
+                              [&, out_data](const tbb::blocked_range<size_t>& r){
+
+            // warning not atomic cout
+            tbb::tick_count t0 = tbb::tick_count::now();
+
+            for(size_t k=r.begin(); k!=r.end(); ++k)
+            {
+                for (long r = 0; r < output_tensor.nr(); ++r)
+                {
+                    for (long c = 0; c < output_tensor.nc(); ++c)
+                    {
+                        double score = out_data[(k*output_tensor.nr() + r)*output_tensor.nc() + c];
+                        if (score > adjust_threshold)
+                        {
+                            std::string i_mssg = "";
+                            int i_index = (k*output_tensor.nr() + r)*output_tensor.nc() + c;
+                            i_mssg = i_mssg + "DEBUG - i calculated on host is: " + std::to_string(i_index);
+                            dpoint p = output_tensor_to_input_tensor(net, point(c,r));
+                            drectangle rect = centered_drect(p, options.detector_windows[k].width, options.detector_windows[k].height);
+                            rect = input_layer(net).tensor_space_to_image_space(input_tensor,rect);
+
+                            auto lastElem = concurrent_dets_accum.push_back(intermediate_detection(rect, score, (k*output_tensor.nr() + r)*output_tensor.nc() + c, k));
+                            if (options.use_bounding_box_regression)
+                            {
+                                std::string d_mssg = "";
+
+                                const auto offset = options.detector_windows.size() + k*4;
+                                lastElem->tensor_offset_dx = ((offset+0)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                lastElem->tensor_offset_dy = ((offset+1)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                lastElem->tensor_offset_dw = ((offset+2)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                lastElem->tensor_offset_dh = ((offset+3)*output_tensor.nr() + r)*output_tensor.nc() + c;
+
+                                // apply BBR to dets_accum.back()
+                                double dx = out_data[lastElem->tensor_offset_dx];
+                                double dy = out_data[lastElem->tensor_offset_dy];
+                                double dw = out_data[lastElem->tensor_offset_dw];
+                                double dh = out_data[lastElem->tensor_offset_dh];
+
+                                // checking dx dy dw dh
+                                // d_mssg = d_mssg + "dx,dy,dw,dh: " + std::to_string(dx) + ", " + std::to_string(dy) + ", " + std::to_string(dw) + ", " + std::to_string(dh) + "\n";
+                                // i_mssg += d_mssg;
+                                // std::cout <<  i_mssg;
+
+                                dw = std::exp(dw);
+                                dh = std::exp(dh);
+                                double w = rect.width()-1;
+                                double h = rect.height()-1;
+                                rect = translate_rect(rect, dpoint(dx*w,dy*h));
+                                rect = centered_drect(rect, w*dw+1, h*dh+1);
+                                lastElem->rect_bbr = rect;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // tbb debug cout
+            //std::string message = "";
+            //message = message + "i am thread with rbegin(), rend(): " + std::to_string(r.begin()) + ", " + std::to_string(r.end());
+            //tbb::tick_count t1 = tbb::tick_count::now();
+            //message += " work took (s): " + std::to_string((t1-t0).seconds());
+            //std::cout << message << std::endl;
+            // end tbb debug cout
+
+                });
+
+            // TIME MEASURE
+            // auto finishTime = std::chrono::high_resolution_clock::now();
+            // std::chrono::duration<double> elapsedTime = finishTime - startTime;
+            // std::cout << "Elapsed time for tensor_to_dets: " << elapsedTime.count() * 1000 << " ms\n";
+            // end TIME MEASURE
+
+            // copy to std vec
+            for(auto && el : concurrent_dets_accum)
+                dets_accum.push_back(el);
+
+            }
+
             std::sort(dets_accum.rbegin(), dets_accum.rend());
         }
 

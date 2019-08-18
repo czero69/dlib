@@ -16,6 +16,25 @@ if (OPENMP_FOUND)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif()
 
+
+#find_package(TBB PATHS "/opt/intel/openvino_2019.1.133/deployment_tools/inference_engine/external/tbb/" REQUIRED tbb)
+
+if (IE_NOT_FOUND_MESSAGE)
+    find_package(InferenceEngine 1.6 QUIET)
+    if (NOT(InferenceEngine_FOUND))
+        message(FATAL_ERROR ${IE_NOT_FOUND_MESSAGE})
+    endif()
+else()
+    find_package(InferenceEngine 1.6 REQUIRED)
+endif()
+
+#IE_ROOT_DIR
+#LINK_DIRECTORIES("/opt/intel/openvino_2019.1.133/deployment_tools/inference_engine/external/tbb/lib/")
+
+LINK_DIRECTORIES("${IE_ROOT_DIR}/../deployment_tools/inference_engine/external/tbb/lib/")
+include_directories("${IE_ROOT_DIR}/../deployment_tools/inference_engine/external/tbb/include/")
+
+
 #SET(CMAKE_PREFIX_PATH "/opencv341-CUDA")
 #find_package(OpenCV PATHS "/opencv341-CUDA")
 
@@ -88,6 +107,8 @@ macro(add_example name)
    target_link_libraries(${name} dlib::dlib )
    target_link_libraries(${name} ${OpenCV_LIBS} )
    target_link_libraries(${name} Threads::Threads) 
+   target_link_libraries(${name} ${TBB_IMPORTED_TARGETS})
+   target_link_libraries(${name} tbb)
 endmacro()
 
 # if an example requires GUI, call this macro to check DLIB_NO_GUI_SUPPORT to include or exclude

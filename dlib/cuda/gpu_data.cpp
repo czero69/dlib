@@ -13,6 +13,10 @@
 #include <cstring>
 #include <cuda.h>
 
+#include <chrono>
+
+#include "myCuda_tensorToDets.h"
+
 namespace dlib
 {
 
@@ -129,8 +133,45 @@ namespace dlib
     {
         if (!host_current)
         {
+            auto startTime_out_data = std::chrono::high_resolution_clock::now();
             wait_for_transfer_to_finish();
-            CHECK_CUDA(cudaMemcpy(data_host.get(), data_device.get(), data_size*sizeof(float), cudaMemcpyDeviceToHost));
+            // my EDIT --
+            char testChar;
+            int2 testInt;
+            unsigned int len = 64;
+
+
+            //#ifdef __CUDACC__
+            // cuda::runTest();
+            //#endif
+
+            cudaEvent_t start, stop;
+
+            cudaEventCreate(&start);
+            cudaEventCreate(&stop);
+
+
+            cudaEventRecord(start,0);
+            CHECK_CUDA(cudaMemcpy(data_host.get(), data_device.get(), data_size*sizeof(float),
+                                               cudaMemcpyDeviceToHost));
+            cudaEventRecord(stop,0);
+            cudaEventSynchronize(stop);
+
+            float memcpy_d2h_time_sync;
+            cudaEventElapsedTime(&memcpy_d2h_time_sync, start, stop);
+
+            // myCUDA cout printf
+            //printf(" Memcpy device to host SYNC\t: %f ms (%f GB/s)\n",
+            //           memcpy_d2h_time_sync, (data_size*sizeof(float) * 1e-6)/ memcpy_d2h_time_sync);
+
+            // end my EDIT --
+            // CHECK_CUDA(cudaMemcpy(data_host.get(), data_device.get(), data_size*sizeof(float), cudaMemcpyDeviceToHost));
+
+            // Time measurements
+            // auto finishTime_out_data = std::chrono::high_resolution_clock::now();
+            // std::chrono::duration<double> elapsedTime_out_data = finishTime_out_data - startTime_out_data;
+            // std::cout << "Elapsed time for copy_to_host(): " << elapsedTime_out_data.count() * 1000 << " ms\n" <<  ", datasize is MB: " << data_size*sizeof(float)*1e-6 << std::endl;
+            // end Time measurements
             host_current = true;
             // At this point we know our RAM block isn't in use because cudaMemcpy()
             // implicitly syncs with the device. 
@@ -205,7 +246,9 @@ namespace dlib
                 data_device.reset();
 
                 void* data;
-                CHECK_CUDA(cudaMallocHost(&data, new_size*sizeof(float)));
+                //std::cout << "cuda Malloc Host here ---------" << std::endl;
+                //if(myFullTensorsDeviceToHostCpy)
+                CHECK_CUDA(cudaMallocHost(&data, new_size*sizeof(float))); // @ my-TODO not necessary now (?)
                 // Note that we don't throw exceptions since the free calls are invariably
                 // called in destructors.  They also shouldn't fail anyway unless someone
                 // is resetting the GPU card in the middle of their program.
