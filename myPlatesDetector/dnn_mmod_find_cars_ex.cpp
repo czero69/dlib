@@ -60,7 +60,7 @@ int main(int argc, char** argv) try
 {
     // trying options ---------------------------------------
 
-    cuda::cudaDeviceScheduleMode::Choice myMode = cuda::cudaDeviceScheduleMode::Choice::Yield;
+    cuda::cudaDeviceScheduleMode::Choice myMode = cuda::cudaDeviceScheduleMode::Choice::Blocking;
     cuda::set_flag_cudaDeviceSchedule(myMode);
     mmod_options options;
 
@@ -112,8 +112,8 @@ int main(int argc, char** argv) try
         load_image(img_vec[i], imgPath);
 
     // WARNING - INPUT IMAGE IS SCALED HERE - BE AWARE (!)
-    const int nominal_width = 1 * 2592;
-    const int nominal_height = 1 * 2048;
+    const int nominal_width = 10 * 2592;
+    const int nominal_height = 10 * 2048;
 
         if(img.nc() >= nominal_width/2 || img.nr() >= nominal_height/2)
         {
@@ -189,7 +189,7 @@ int main(int argc, char** argv) try
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    const int NORMAL_TEST_COUNT = 1;
+    const int NORMAL_TEST_COUNT = 100;
 
     // Portion of code to be timed
     for(int i = 0; i < NORMAL_TEST_COUNT; i++)
