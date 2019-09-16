@@ -817,6 +817,9 @@ namespace dlib
                         1, 1, // must be 1,1
                         CUDNN_CROSS_CORRELATION,
                         CUDNN_DATA_FLOAT)); // could also be CUDNN_CONVOLUTION
+                // Set the math type to allow cuDNN to use Tensor Cores:
+                // TODO: check turing
+                //CHECK_CUDNN( cudnnSetConvolutionMathType((cudnnConvolutionDescriptor_t)conv_handle, CUDNN_TENSOR_OP_MATH_ALLOW_CONVERSION) );
 #else
                 CHECK_CUDNN(cudnnSetConvolution2dDescriptor((cudnnConvolutionDescriptor_t)conv_handle,
                         padding_y, // vertical padding
@@ -841,6 +844,8 @@ namespace dlib
 
                 // Pick which forward algorithm we will use and allocate the necessary
                 // workspace buffer.
+
+                // TODO: check turing
                 cudnnConvolutionFwdAlgo_t forward_best_algo;
                 CHECK_CUDNN(cudnnGetConvolutionForwardAlgorithm(
                         context(), 
@@ -860,6 +865,8 @@ namespace dlib
                         descriptor(dest_desc),
                         forward_best_algo,
                         &forward_workspace_size_in_bytes));
+
+                //cudnnConvolutionFwdAlgo_t forward_best_algo = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
 
                 // Pick which backward data algorithm we will use and allocate the
                 // necessary workspace buffer.

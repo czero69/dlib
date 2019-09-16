@@ -145,20 +145,19 @@ namespace dlib
             // cuda::runTest();
             //#endif
 
-            cudaEvent_t start, stop;
+            //cudaEvent_t start, stop;
+            //cudaEventCreate(&start);
+            //cudaEventCreate(&stop);
 
-            cudaEventCreate(&start);
-            cudaEventCreate(&stop);
 
-
-            cudaEventRecord(start,0);
+            //cudaEventRecord(start,0);
             CHECK_CUDA(cudaMemcpy(data_host.get(), data_device.get(), data_size*sizeof(float),
                                                cudaMemcpyDeviceToHost));
-            cudaEventRecord(stop,0);
-            cudaEventSynchronize(stop);
+            //cudaEventRecord(stop,0);
+            //cudaEventSynchronize(stop);
 
-            float memcpy_d2h_time_sync;
-            cudaEventElapsedTime(&memcpy_d2h_time_sync, start, stop);
+            //float memcpy_d2h_time_sync;
+            //cudaEventElapsedTime(&memcpy_d2h_time_sync, start, stop);
 
             // myCUDA cout printf
             //printf(" Memcpy device to host SYNC\t: %f ms (%f GB/s)\n",

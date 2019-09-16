@@ -46,13 +46,36 @@ template <typename SUBNET> using rcon5  = relu<affine<con5<55,SUBNET>>>;
 using net_type = loss_mmod<con<1,9,9,1,1,rcon5<rcon5<rcon5<downsampler<input_rgb_image_pyramid<pyramid_down<6>>>>>>>>;*/
 
 
-// shrinked model5 - affine:
-template <long num_filters, typename SUBNET> using myCon2 = con<num_filters,5,5,2,2,SUBNET>;
 template <long num_filters, typename SUBNET> using con5d = con<num_filters,5,5,2,2,SUBNET>;
 template <long num_filters, typename SUBNET> using con5  = con<num_filters,5,5,1,1,SUBNET>;
 template <typename SUBNET> using downsampler  = relu<affine<con5d<32, relu<affine<con5d<32, relu<affine<con5d<16,SUBNET>>>>>>>>>;
 template <typename SUBNET> using rcon5  = relu<affine<con5<55,SUBNET>>>;
-using net_type = loss_mmod<con<1,9,9,1,1,rcon5<downsampler<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
+
+template <long num_filters, typename SUBNET> using rcon5_1_div4  = relu<affine<con<num_filters / 4,5,1,1,1,SUBNET>>>;
+template <long num_filters, typename SUBNET> using rcon1_5_div4  = relu<affine<con<num_filters / 4,1,5,1,1,SUBNET>>>;
+template <long num_filters, typename SUBNET> using rcon1_1_div4  = relu<affine<con<num_filters / 4,1,1,1,1,SUBNET>>>;
+template <long num_filters, typename SUBNET> using rcon5_5_div4_str2  = relu<affine<con<num_filters / 4,5,5,2,2,SUBNET>>>;
+template <long num_filters, typename SUBNET> using rcon1_1  = relu<affine<con<num_filters,1,1,1,1,SUBNET>>>;
+
+
+
+template <long num_filters, typename SUBNET> using rfireBlock5 = rcon1_1<num_filters, rcon1_5_div4<num_filters, rcon5_1_div4<num_filters, rcon1_1_div4<num_filters, SUBNET>>>>;
+template <typename SUBNET> using _55_rfireBlock5  = rfireBlock5<55, SUBNET>;
+
+template <long num_filters, typename SUBNET> using rfireBlock5_v2 = rcon1_1<num_filters, rcon5_5_div4_str2<num_filters, rcon1_1_div4<num_filters, SUBNET>>>;
+template <typename SUBNET> using _55_rfireBlock5_v2  = rcon5_1_div4<55, rcon1_1<55, SUBNET>>;
+
+template <typename SUBNET> using _32part_downsampler_fb = max_pool<5,5, 2, 2, rfireBlock5<32, SUBNET>>;
+template <typename SUBNET> using _32part_downsampler_fb_v2 = rfireBlock5_v2<32, SUBNET>;
+
+
+template <typename SUBNET> using downsampler2  = _32part_downsampler_fb<_32part_downsampler_fb<relu<affine<con5d<16,SUBNET>>>>>;
+template <typename SUBNET> using downsampler2_v2  = _32part_downsampler_fb_v2<_32part_downsampler_fb_v2<relu<affine<con5d<16,SUBNET>>>>>;
+
+//using net_type = loss_mmod<con<1,9,9,1,1,rcon5<downsampler<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
+//using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5<downsampler2<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
+using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5_v2<downsampler2_v2<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
+//using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5_v2<downsampler2_v2<rcon1_1< 1 , input_rgb_image_pyramid<pyramid_down<4>>>>>>>;
 
 // ----------------------------------------------------------------------------------------
 
@@ -97,6 +120,8 @@ int main(int argc, char** argv) try
 
 
     deserialize(detectorPath) >> net;
+
+    //net.subnet().layer_details().set_num_filters(7);
 
     std::cout << " net.subnet().get_output().k() :" <<  net.subnet().get_output().k() << std::endl;
     std::cout << " net.subnet().layer_details().get_layer_params().k() :" <<  net.subnet().layer_details().get_layer_params().k() << std::endl;
@@ -185,7 +210,7 @@ int main(int argc, char** argv) try
     //record start time
 
     std::cout << "-------SINGLE TEST ---------" << std::endl;
-    // net.clean(); // --
+    net.clean(); // --
 
     auto start = std::chrono::high_resolution_clock::now();
 

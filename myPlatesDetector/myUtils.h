@@ -266,6 +266,71 @@ namespace dlib
     }
 
     // no parts version
+    void load_image_dataset_only_box_subset (
+        dlib::image_dataset_metadata::dataset & data,
+        std::vector<std::vector<dlib::mmod_rect>> & object_locations,
+        const image_dataset_file& source,
+            unsigned long from_frame, unsigned long to_frame
+    )
+    {
+        locally_change_current_dir chdir(get_parent_directory(file(source.get_filename())));
+
+        std::vector<mmod_rect> rects;
+        //for (unsigned long i = 0; i < data.images.size(); ++i)
+        for(unsigned long i = std::max(int(0),int(from_frame)); i < std::min(int(data.images.size()),int(to_frame)); ++i)
+        {
+            double min_rect_size = std::numeric_limits<double>::infinity();
+            rects.clear();
+            for (unsigned long j = 0; j < data.images[i].boxes.size(); ++j)
+            {
+                if (source.should_load_box(data.images[i].boxes[j]))
+                {
+                    if (data.images[i].boxes[j].ignore)
+                    {
+                        rects.push_back(ignored_mmod_rect(data.images[i].boxes[j].rect));
+                    }
+                    else
+                    {
+                        rects.push_back(mmod_rect(data.images[i].boxes[j].rect));
+                        min_rect_size = std::min<double>(min_rect_size, rects.back().rect.area());
+                    }
+                    rects.back().label = data.images[i].boxes[j].label;
+                }
+            }
+
+            if (!source.should_skip_empty_images() || impl::num_non_ignored_boxes(rects) != 0)
+            {
+                if (rects.size() != 0)
+                {
+                    // if shrinking the image would still result in the smallest box being
+                    // bigger than the box area threshold then shrink the image.
+                    while(min_rect_size/2/2 > source.box_area_thresh())
+                    {
+                        pyramid_down<2> pyr;
+                        min_rect_size *= (1.0/2.0)*(1.0/2.0);
+                        for (auto&& r : rects)
+                        {
+                            r.rect = pyr.rect_down(r.rect);
+                        }
+                    }
+                    while(min_rect_size*(2.0/3.0)*(2.0/3.0) > source.box_area_thresh())
+                    {
+                        pyramid_down<3> pyr;;
+                        min_rect_size *= (2.0/3.0)*(2.0/3.0);
+                        for (auto&& r : rects)
+                            r.rect = pyr.rect_down(r.rect);
+                        for (auto&& r : rects)
+                        {
+                            r.rect = pyr.rect_down(r.rect);
+                        }
+                    }
+                }
+                object_locations.push_back(std::move(rects));
+            }
+        }
+    }
+
+    // no parts version
     template <
         typename array_type
         >
@@ -520,7 +585,9 @@ namespace dlib
         // Set the current directory to be the one that contains the
         // metadata file. We do this because the file might contain
         // file paths which are relative to this folder.
-        locally_change_current_dir chdir(get_parent_directory(file(source.get_filename())));
+
+        // TODO: no multithreaded friendly ---
+        //locally_change_current_dir chdir(get_parent_directory(file(source.get_filename())));
 
 
         std::set<std::string> all_parts;

@@ -14,7 +14,7 @@
 
 typedef struct {
     int i; // linear index in tensor spaces
-    int k;
+    int k; // tensor channel
     float score;
     float dx, dy, dw, dh;
     } MyRectAndOffset;
