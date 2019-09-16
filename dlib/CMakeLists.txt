@@ -373,7 +373,7 @@ if (NOT TARGET dlib)
             endif()
          endif()
 
-         mark_as_advanced(pthreadlib xlib xlib_path x11_path)
+         mark_as_advanced(xlib xlib_path x11_path)
       else () ##################################################################################
          # link to the nsl library if it exists.  this is something you need sometimes 
          find_library(nsllib nsl)
@@ -403,7 +403,7 @@ if (NOT TARGET dlib)
             endif()
          endif()
 
-         mark_as_advanced(nsllib pthreadlib socketlib)
+         mark_as_advanced(nsllib socketlib)
       endif () ##################################################################################
 
       if (NOT DLIB_NO_GUI_SUPPORT)
@@ -437,7 +437,6 @@ if (NOT TARGET dlib)
          if (PNG_FOUND)
             include_directories(${PNG_INCLUDE_DIR})
             set (dlib_needed_libraries ${dlib_needed_libraries} ${PNG_LIBRARIES})
-            set(REQUIRES_LIBS " libpng")
          else()
             # If we can't find libpng then statically compile it in.
             include_directories(external/libpng external/zlib)
@@ -487,7 +486,6 @@ if (NOT TARGET dlib)
                   )
                set_source_files_properties(external/libpng/arm/filter_neon.S PROPERTIES COMPILE_FLAGS "${CMAKE_ASM_FLAGS} ${CMAKE_CXX_FLAGS} -x assembler-with-cpp")
             endif()
-            set(REQUIRES_LIBS "")
          endif()
          set(source_files ${source_files}
             image_loader/png_loader.cpp
@@ -504,50 +502,50 @@ if (NOT TARGET dlib)
             # If we can't find libjpeg then statically compile it in.
             add_definitions(-DDLIB_JPEG_STATIC)
             set(source_files ${source_files}
-               external/libjpeg/jcomapi.cpp
-               external/libjpeg/jdapimin.cpp
-               external/libjpeg/jdapistd.cpp
-               external/libjpeg/jdatasrc.cpp
-               external/libjpeg/jdcoefct.cpp
-               external/libjpeg/jdcolor.cpp
-               external/libjpeg/jddctmgr.cpp
-               external/libjpeg/jdhuff.cpp
-               external/libjpeg/jdinput.cpp
-               external/libjpeg/jdmainct.cpp
-               external/libjpeg/jdmarker.cpp
-               external/libjpeg/jdmaster.cpp
-               external/libjpeg/jdmerge.cpp
-               external/libjpeg/jdphuff.cpp
-               external/libjpeg/jdpostct.cpp
-               external/libjpeg/jdsample.cpp
-               external/libjpeg/jerror.cpp
-               external/libjpeg/jidctflt.cpp
-               external/libjpeg/jidctfst.cpp
-               external/libjpeg/jidctint.cpp
-               external/libjpeg/jidctred.cpp
-               external/libjpeg/jmemmgr.cpp
-               external/libjpeg/jmemnobs.cpp
-               external/libjpeg/jquant1.cpp
-               external/libjpeg/jquant2.cpp
-               external/libjpeg/jutils.cpp  
-               external/libjpeg/jcapimin.cpp
-               external/libjpeg/jdatadst.cpp
-               external/libjpeg/jcparam.cpp
-               external/libjpeg/jcapistd.cpp
-               external/libjpeg/jcmarker.cpp
-               external/libjpeg/jcinit.cpp
-               external/libjpeg/jcmaster.cpp
-               external/libjpeg/jcdctmgr.cpp
-               external/libjpeg/jccoefct.cpp  
-               external/libjpeg/jccolor.cpp  
-               external/libjpeg/jchuff.cpp  
-               external/libjpeg/jcmainct.cpp  
-               external/libjpeg/jcphuff.cpp  
-               external/libjpeg/jcprepct.cpp  
-               external/libjpeg/jcsample.cpp
-               external/libjpeg/jfdctint.cpp
-               external/libjpeg/jfdctflt.cpp
-               external/libjpeg/jfdctfst.cpp
+              external/libjpeg/jaricom.c
+              external/libjpeg/jcapimin.c
+              external/libjpeg/jcapistd.c
+              external/libjpeg/jcarith.c
+              external/libjpeg/jccoefct.c
+              external/libjpeg/jccolor.c
+              external/libjpeg/jcdctmgr.c
+              external/libjpeg/jchuff.c
+              external/libjpeg/jcinit.c
+              external/libjpeg/jcmainct.c
+              external/libjpeg/jcmarker.c
+              external/libjpeg/jcmaster.c
+              external/libjpeg/jcomapi.c
+              external/libjpeg/jcparam.c
+              external/libjpeg/jcprepct.c
+              external/libjpeg/jcsample.c
+              external/libjpeg/jdapimin.c
+              external/libjpeg/jdapistd.c
+              external/libjpeg/jdarith.c
+              external/libjpeg/jdatadst.c
+              external/libjpeg/jdatasrc.c
+              external/libjpeg/jdcoefct.c
+              external/libjpeg/jdcolor.c
+              external/libjpeg/jddctmgr.c
+              external/libjpeg/jdhuff.c
+              external/libjpeg/jdinput.c
+              external/libjpeg/jdmainct.c
+              external/libjpeg/jdmarker.c
+              external/libjpeg/jdmaster.c
+              external/libjpeg/jdmerge.c
+              external/libjpeg/jdpostct.c
+              external/libjpeg/jdsample.c
+              external/libjpeg/jerror.c
+              external/libjpeg/jfdctflt.c
+              external/libjpeg/jfdctfst.c
+              external/libjpeg/jfdctint.c
+              external/libjpeg/jidctflt.c
+              external/libjpeg/jidctfst.c
+              external/libjpeg/jidctint.c
+              external/libjpeg/jmemmgr.c
+              external/libjpeg/jmemnobs.c
+              external/libjpeg/jquant1.c
+              external/libjpeg/jquant2.c
+              external/libjpeg/jutils.c
                )
          endif()
          set(source_files ${source_files}
@@ -772,6 +770,7 @@ if (NOT TARGET dlib)
                ${cudnn}
                ${CUDA_curand_LIBRARY}
                ${CUDA_cusolver_LIBRARY}
+               ${CUDA_CUDART_LIBRARY}
                )
             if(openmp_libraries)
                list(APPEND dlib_needed_libraries ${openmp_libraries})
@@ -884,6 +883,11 @@ if (NOT TARGET dlib)
    # Install the library
 
    if (NOT DLIB_IN_PROJECT_BUILD)
+      string (REPLACE ";" " " pkg_config_dlib_needed_libraries "${dlib_needed_libraries}")
+      # Make the -I include options for pkg-config
+      foreach (ITR ${dlib_needed_includes})
+         set (pkg_config_dlib_needed_includes "${pkg_config_dlib_needed_includes} -I${ITR}")
+      endforeach()
       set_target_properties(dlib PROPERTIES
          VERSION ${VERSION})
       install(TARGETS dlib
