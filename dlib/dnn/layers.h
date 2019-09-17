@@ -19,6 +19,319 @@
 namespace dlib
 {
 
+// https://arxiv.org/abs/1807.03247 https://eng.uber.com/coordconv/
+
+template <
+    long _nr,
+    long _nc,
+    int _stride_y,
+    int _stride_x,
+    int _padding_y = _stride_y!=1? 0 : _nr/2,
+    int _padding_x = _stride_x!=1? 0 : _nc/2
+    >
+class ijcoord_
+{
+public:
+    static_assert(_nr >= 0, "The number of rows in a filter must be >= 0");
+    static_assert(_nc >= 0, "The number of columns in a filter must be >= 0");
+    static_assert(_stride_y > 0, "The filter stride must be > 0");
+    static_assert(_stride_x > 0, "The filter stride must be > 0");
+    static_assert(_nr==0 || (0 <= _padding_y && _padding_y < _nr), "The padding must be smaller than the filter size.");
+    static_assert(_nc==0 || (0 <= _padding_x && _padding_x < _nc), "The padding must be smaller than the filter size.");
+    static_assert(_nr!=0 || 0 == _padding_y, "If _nr==0 then the padding must be set to 0 as well.");
+    static_assert(_nc!=0 || 0 == _padding_x, "If _nr==0 then the padding must be set to 0 as well.");
+
+    ijcoord_( const int filters
+    ) :
+        learning_rate_multiplier(1),
+        weight_decay_multiplier(1),
+        bias_learning_rate_multiplier(1),
+        bias_weight_decay_multiplier(0),
+        num_filters_(filters),
+        padding_y_(_padding_y),
+        padding_x_(_padding_x)
+    {
+        DLIB_CASSERT(num_filters_ > 0);
+    }
+
+    ijcoord_() : ijcoord_(2) {}
+
+    long num_filters() const { return num_filters_; }
+    long nr() const
+    {
+        if (_nr==0)
+            return filters.nr();
+        else
+            return _nr;
+    }
+    long nc() const
+    {
+        if (_nc==0)
+            return filters.nc();
+        else
+            return _nc;
+    }
+    long stride_y() const { return _stride_y; }
+    long stride_x() const { return _stride_x; }
+    long padding_y() const { return padding_y_; }
+    long padding_x() const { return padding_x_; }
+
+    void set_num_filters(long num)
+    {
+        DLIB_CASSERT(num > 0);
+        if (num != num_filters_)
+        {
+            DLIB_CASSERT(get_layer_params().size() == 0,
+                "You can't change the number of filters in con_ if the parameter tensor has already been allocated.");
+            num_filters_ = num;
+        }
+    }
+
+    double get_learning_rate_multiplier () const  { return learning_rate_multiplier; }
+    double get_weight_decay_multiplier () const   { return weight_decay_multiplier; }
+    void set_learning_rate_multiplier(double val) { learning_rate_multiplier = val; }
+    void set_weight_decay_multiplier(double val)  { weight_decay_multiplier  = val; }
+
+    double get_bias_learning_rate_multiplier () const  { return bias_learning_rate_multiplier; }
+    double get_bias_weight_decay_multiplier () const   { return bias_weight_decay_multiplier; }
+    void set_bias_learning_rate_multiplier(double val) { bias_learning_rate_multiplier = val; }
+    void set_bias_weight_decay_multiplier(double val)  { bias_weight_decay_multiplier  = val; }
+
+    inline dpoint map_input_to_output (
+        dpoint p
+    ) const
+    {
+        p.x() = (p.x()+padding_x()-nc()/2)/stride_x();
+        p.y() = (p.y()+padding_y()-nr()/2)/stride_y();
+        return p;
+    }
+
+    inline dpoint map_output_to_input (
+        dpoint p
+    ) const
+    {
+        p.x() = p.x()*stride_x() - padding_x() + nc()/2;
+        p.y() = p.y()*stride_y() - padding_y() + nr()/2;
+        return p;
+    }
+
+    ijcoord_ (
+        const ijcoord_& item
+    ) :
+        params(item.params),
+        filters(item.filters),
+        biases(item.biases),
+        learning_rate_multiplier(item.learning_rate_multiplier),
+        weight_decay_multiplier(item.weight_decay_multiplier),
+        bias_learning_rate_multiplier(item.bias_learning_rate_multiplier),
+        bias_weight_decay_multiplier(item.bias_weight_decay_multiplier),
+        num_filters_(item.num_filters_),
+        padding_y_(item.padding_y_),
+        padding_x_(item.padding_x_)
+    {
+        // this->conv is non-copyable and basically stateless, so we have to write our
+        // own copy to avoid trying to copy it and getting an error.
+    }
+
+    ijcoord_& operator= (
+        const ijcoord_& item
+    )
+    {
+        if (this == &item)
+            return *this;
+
+        // this->conv is non-copyable and basically stateless, so we have to write our
+        // own copy to avoid trying to copy it and getting an error.
+        params = item.params;
+        filters = item.filters;
+        biases = item.biases;
+        padding_y_ = item.padding_y_;
+        padding_x_ = item.padding_x_;
+        learning_rate_multiplier = item.learning_rate_multiplier;
+        weight_decay_multiplier = item.weight_decay_multiplier;
+        bias_learning_rate_multiplier = item.bias_learning_rate_multiplier;
+        bias_weight_decay_multiplier = item.bias_weight_decay_multiplier;
+        num_filters_ = item.num_filters_;
+        return *this;
+    }
+
+    template <typename SUBNET>
+    void setup (const SUBNET& sub)
+    {
+        const long filt_nr = _nr!=0 ? _nr : sub.get_output().nr();
+        const long filt_nc = _nc!=0 ? _nc : sub.get_output().nc();
+
+        long num_inputs = filt_nr*filt_nc*sub.get_output().k();
+        long num_outputs = num_filters_;
+        // allocate params for the filters and also for the filter bias values.
+        params.set_size(num_inputs*num_filters_ + num_filters_);
+
+        dlib::rand rnd(std::rand());
+        randomize_parameters(params, num_inputs+num_outputs, rnd);
+
+        filters = alias_tensor(num_filters_, sub.get_output().k(), filt_nr, filt_nc);
+        biases = alias_tensor(1,num_filters_);
+
+        // set the initial bias values to zero
+        biases(params,filters.size()) = 0;
+    }
+
+    template <typename SUBNET>
+    void forward(const SUBNET& sub, resizable_tensor& output)
+    {
+        conv.setup(sub.get_output(),
+                   filters(params,0),
+                   _stride_y,
+                   _stride_x,
+                   padding_y_,
+                   padding_x_);
+        conv(false, output,
+            sub.get_output(),
+            filters(params,0));
+
+        tt::add(1,output,1,biases(params,filters.size()));
+    }
+
+    template <typename SUBNET>
+    void backward(const tensor& gradient_input, SUBNET& sub, tensor& params_grad)
+    {
+        conv.get_gradient_for_data (true, gradient_input, filters(params,0), sub.get_gradient_input());
+        // no dpoint computing the parameter gradients if they won't be used.
+        if (learning_rate_multiplier != 0)
+        {
+            auto filt = filters(params_grad,0);
+            conv.get_gradient_for_filters (false, gradient_input, sub.get_output(), filt);
+            auto b = biases(params_grad, filters.size());
+            tt::assign_conv_bias_gradient(b, gradient_input);
+        }
+    }
+
+    const tensor& get_layer_params() const { return params; }
+    tensor& get_layer_params() { return params; }
+
+    friend void serialize(const ijcoord_& item, std::ostream& out)
+    {
+        serialize("con_4", out);
+        serialize(item.params, out);
+        serialize(item.num_filters_, out);
+        serialize(_nr, out);
+        serialize(_nc, out);
+        serialize(_stride_y, out);
+        serialize(_stride_x, out);
+        serialize(item.padding_y_, out);
+        serialize(item.padding_x_, out);
+        serialize(item.filters, out);
+        serialize(item.biases, out);
+        serialize(item.learning_rate_multiplier, out);
+        serialize(item.weight_decay_multiplier, out);
+        serialize(item.bias_learning_rate_multiplier, out);
+        serialize(item.bias_weight_decay_multiplier, out);
+    }
+
+    friend void deserialize(ijcoord_& item, std::istream& in)
+    {
+        std::string version;
+        deserialize(version, in);
+        long nr;
+        long nc;
+        int stride_y;
+        int stride_x;
+        if (version == "con_4")
+        {
+            deserialize(item.params, in);
+            deserialize(item.num_filters_, in);
+            deserialize(nr, in);
+            deserialize(nc, in);
+            deserialize(stride_y, in);
+            deserialize(stride_x, in);
+            deserialize(item.padding_y_, in);
+            deserialize(item.padding_x_, in);
+            deserialize(item.filters, in);
+            deserialize(item.biases, in);
+            deserialize(item.learning_rate_multiplier, in);
+            deserialize(item.weight_decay_multiplier, in);
+            deserialize(item.bias_learning_rate_multiplier, in);
+            deserialize(item.bias_weight_decay_multiplier, in);
+            if (item.padding_y_ != _padding_y) throw serialization_error("Wrong padding_y found while deserializing dlib::con_");
+            if (item.padding_x_ != _padding_x) throw serialization_error("Wrong padding_x found while deserializing dlib::con_");
+            if (nr != _nr) throw serialization_error("Wrong nr found while deserializing dlib::con_");
+            if (nc != _nc) throw serialization_error("Wrong nc found while deserializing dlib::con_");
+            if (stride_y != _stride_y) throw serialization_error("Wrong stride_y found while deserializing dlib::con_");
+            if (stride_x != _stride_x) throw serialization_error("Wrong stride_x found while deserializing dlib::con_");
+        }
+        else
+        {
+            throw serialization_error("Unexpected version '"+version+"' found while deserializing dlib::con_.");
+        }
+    }
+
+
+    friend std::ostream& operator<<(std::ostream& out, const ijcoord_& item)
+    {
+        out << "con\t ("
+            << "num_filters="<<item.num_filters_
+            << ", nr="<<item.nr()
+            << ", nc="<<item.nc()
+            << ", stride_y="<<_stride_y
+            << ", stride_x="<<_stride_x
+            << ", padding_y="<<item.padding_y_
+            << ", padding_x="<<item.padding_x_
+            << ")";
+        out << " learning_rate_mult="<<item.learning_rate_multiplier;
+        out << " weight_decay_mult="<<item.weight_decay_multiplier;
+        out << " bias_learning_rate_mult="<<item.bias_learning_rate_multiplier;
+        out << " bias_weight_decay_mult="<<item.bias_weight_decay_multiplier;
+        return out;
+    }
+
+    friend void to_xml(const ijcoord_& item, std::ostream& out)
+    {
+        out << "<con"
+            << " num_filters='"<<item.num_filters_<<"'"
+            << " nr='"<<item.nr()<<"'"
+            << " nc='"<<item.nc()<<"'"
+            << " stride_y='"<<_stride_y<<"'"
+            << " stride_x='"<<_stride_x<<"'"
+            << " padding_y='"<<item.padding_y_<<"'"
+            << " padding_x='"<<item.padding_x_<<"'"
+            << " learning_rate_mult='"<<item.learning_rate_multiplier<<"'"
+            << " weight_decay_mult='"<<item.weight_decay_multiplier<<"'"
+            << " bias_learning_rate_mult='"<<item.bias_learning_rate_multiplier<<"'"
+            << " bias_weight_decay_mult='"<<item.bias_weight_decay_multiplier<<"'>\n";
+        out << mat(item.params);
+        out << "</con>";
+    }
+
+private:
+
+    resizable_tensor params;
+    alias_tensor filters, biases;
+
+    tt::tensor_conv conv;
+    double learning_rate_multiplier;
+    double weight_decay_multiplier;
+    double bias_learning_rate_multiplier;
+    double bias_weight_decay_multiplier;
+    long num_filters_;
+
+    // These are here only because older versions of con (which you might encounter
+    // serialized to disk) used different padding settings.
+    int padding_y_;
+    int padding_x_;
+
+};
+
+template <
+    long nr,
+    long nc,
+    int stride_y,
+    int stride_x,
+    typename SUBNET
+    >
+using ijcoord = add_layer<ijcoord_<nr,nc,stride_y,stride_x>, SUBNET>;
+
+// ----------------------------------------------------------------------------------------
+
 // ----------------------------------------------------------------------------------------
 
     struct num_con_outputs
@@ -52,7 +365,7 @@ namespace dlib
 
         con_(
             num_con_outputs o
-        ) : 
+        ) :
             learning_rate_multiplier(1),
             weight_decay_multiplier(1),
             bias_learning_rate_multiplier(1),
@@ -67,15 +380,15 @@ namespace dlib
         con_() : con_(num_con_outputs(_num_filters)) {}
 
         long num_filters() const { return num_filters_; }
-        long nr() const 
-        { 
+        long nr() const
+        {
             if (_nr==0)
                 return filters.nr();
             else
                 return _nr;
         }
-        long nc() const 
-        { 
+        long nc() const
+        {
             if (_nc==0)
                 return filters.nc();
             else
@@ -86,12 +399,12 @@ namespace dlib
         long padding_y() const { return padding_y_; }
         long padding_x() const { return padding_x_; }
 
-        void set_num_filters(long num) 
+        void set_num_filters(long num)
         {
             DLIB_CASSERT(num > 0);
             if (num != num_filters_)
             {
-                DLIB_CASSERT(get_layer_params().size() == 0, 
+                DLIB_CASSERT(get_layer_params().size() == 0,
                     "You can't change the number of filters in con_ if the parameter tensor has already been allocated.");
                 num_filters_ = num;
             }
@@ -127,7 +440,7 @@ namespace dlib
 
         con_ (
             const con_& item
-        ) : 
+        ) :
             params(item.params),
             filters(item.filters),
             biases(item.biases),
@@ -200,7 +513,7 @@ namespace dlib
                 filters(params,0));
 
             tt::add(1,output,1,biases(params,filters.size()));
-        } 
+        }
 
         template <typename SUBNET>
         void backward(const tensor& gradient_input, SUBNET& sub, tensor& params_grad)
@@ -366,7 +679,7 @@ namespace dlib
 
         cont_(
             num_con_outputs o
-        ) : 
+        ) :
             learning_rate_multiplier(1),
             weight_decay_multiplier(1),
             bias_learning_rate_multiplier(1),
@@ -429,7 +742,7 @@ namespace dlib
 
         cont_ (
             const cont_& item
-        ) : 
+        ) :
             params(item.params),
             filters(item.filters),
             biases(item.biases),
@@ -495,19 +808,19 @@ namespace dlib
             unsigned int gk = filt.k();
             output.set_size(gnsamps,gk,gnr,gnc);
             conv.setup(output,filt,_stride_y,_stride_x,padding_y_,padding_x_);
-            conv.get_gradient_for_data(false, sub.get_output(),filt,output);            
+            conv.get_gradient_for_data(false, sub.get_output(),filt,output);
             tt::add(1,output,1,biases(params,filters.size()));
-        } 
+        }
 
         template <typename SUBNET>
         void backward(const tensor& gradient_input, SUBNET& sub, tensor& params_grad)
         {
-            auto filt = filters(params,0);           
+            auto filt = filters(params,0);
             conv(true, sub.get_gradient_input(),gradient_input, filt);
             // no point computing the parameter gradients if they won't be used.
             if (learning_rate_multiplier != 0)
             {
-                auto filt = filters(params_grad,0);                
+                auto filt = filters(params_grad,0);
                 conv.get_gradient_for_filters (false, sub.get_output(),gradient_input, filt);
                 auto b = biases(params_grad, filters.size());
                 tt::assign_conv_bias_gradient(b, gradient_input);
@@ -640,8 +953,8 @@ namespace dlib
 // ----------------------------------------------------------------------------------------
 
     template <
-        int scale_y, 
-        int scale_x 
+        int scale_y,
+        int scale_x
         >
     class upsample_
     {
@@ -649,7 +962,7 @@ namespace dlib
         static_assert(scale_y >= 1, "upsampling scale factor can't be less than 1.");
         static_assert(scale_x >= 1, "upsampling scale factor can't be less than 1.");
 
-        upsample_() 
+        upsample_()
         {
         }
 
@@ -667,7 +980,7 @@ namespace dlib
                 scale_y*sub.get_output().nr(),
                 scale_x*sub.get_output().nc());
             tt::resize_bilinear(output, sub.get_output());
-        } 
+        }
 
         template <typename SUBNET>
         void backward(const tensor& gradient_input, SUBNET& sub, tensor& /*params_grad*/)
@@ -675,17 +988,17 @@ namespace dlib
             tt::resize_bilinear_gradient(sub.get_gradient_input(), gradient_input);
         }
 
-        inline dpoint map_input_to_output (dpoint p) const 
-        { 
+        inline dpoint map_input_to_output (dpoint p) const
+        {
             p.x() = p.x()*scale_x;
             p.y() = p.y()*scale_y;
-            return p; 
+            return p;
         }
-        inline dpoint map_output_to_input (dpoint p) const 
-        { 
+        inline dpoint map_output_to_input (dpoint p) const
+        {
             p.x() = p.x()/scale_x;
             p.y() = p.y()/scale_y;
-            return p; 
+            return p;
         }
 
         const tensor& get_layer_params() const { return params; }
@@ -742,7 +1055,7 @@ namespace dlib
 // ----------------------------------------------------------------------------------------
 
     template <
-        long NR_, 
+        long NR_,
         long NC_
         >
     class resize_to_
@@ -750,53 +1063,53 @@ namespace dlib
     public:
         static_assert(NR_ >= 1, "NR resize parameter can't be less than 1.");
         static_assert(NC_ >= 1, "NC resize parameter can't be less than 1.");
-        
+
         resize_to_()
         {
         }
-        
+
         template <typename SUBNET>
         void setup (const SUBNET& /*sub*/)
         {
         }
-    
+
         template <typename SUBNET>
         void forward(const SUBNET& sub, resizable_tensor& output)
         {
             scale_y = (double)NR_/(double)sub.get_output().nr();
             scale_x = (double)NC_/(double)sub.get_output().nc();
-            
+
             output.set_size(
                 sub.get_output().num_samples(),
                 sub.get_output().k(),
                 NR_,
                 NC_);
             tt::resize_bilinear(output, sub.get_output());
-        } 
-        
+        }
+
         template <typename SUBNET>
         void backward(const tensor& gradient_input, SUBNET& sub, tensor& /*params_grad*/)
         {
             tt::resize_bilinear_gradient(sub.get_gradient_input(), gradient_input);
         }
-        
-        inline dpoint map_input_to_output (dpoint p) const 
-        { 
+
+        inline dpoint map_input_to_output (dpoint p) const
+        {
             p.x() = p.x()*scale_x;
             p.y() = p.y()*scale_y;
-            return p; 
+            return p;
         }
 
-        inline dpoint map_output_to_input (dpoint p) const 
-        { 
+        inline dpoint map_output_to_input (dpoint p) const
+        {
             p.x() = p.x()/scale_x;
             p.y() = p.y()/scale_y;
-            return p; 
+            return p;
         }
-        
+
         const tensor& get_layer_params() const { return params; }
         tensor& get_layer_params() { return params; }
-        
+
         friend void serialize(const resize_to_& item, std::ostream& out)
         {
             serialize("resize_to_", out);
@@ -805,7 +1118,7 @@ namespace dlib
             serialize(item.scale_y, out);
             serialize(item.scale_x, out);
         }
-        
+
         friend void deserialize(resize_to_& item, std::istream& in)
         {
             std::string version;
@@ -822,7 +1135,7 @@ namespace dlib
             if (_nr != NR_ || _nc != NC_)
                 throw serialization_error("Wrong size found while deserializing dlib::resize_to_");
         }
-        
+
         friend std::ostream& operator<<(std::ostream& out, const resize_to_& item)
         {
             out << "resize_to ("
@@ -831,7 +1144,7 @@ namespace dlib
                 << ")";
             return out;
         }
-        
+
         friend void to_xml(const resize_to_& item, std::ostream& out)
         {
             out << "<resize_to";
@@ -842,17 +1155,17 @@ namespace dlib
         resizable_tensor params;
         double scale_y;
         double scale_x;
-    
+
     };  // end of class resize_to_
-    
-    
+
+
     template <
         long NR,
         long NC,
         typename SUBNET
         >
     using resize_to = add_layer<resize_to_<NR,NC>, SUBNET>;
-    
+
 // ----------------------------------------------------------------------------------------
 
     template <
@@ -869,9 +1182,9 @@ namespace dlib
         static_assert(_nc >= 0, "The number of columns in a filter must be >= 0");
         static_assert(_stride_y > 0, "The filter stride must be > 0");
         static_assert(_stride_x > 0, "The filter stride must be > 0");
-        static_assert(0 <= _padding_y && ((_nr==0 && _padding_y == 0) || (_nr!=0 && _padding_y < _nr)), 
+        static_assert(0 <= _padding_y && ((_nr==0 && _padding_y == 0) || (_nr!=0 && _padding_y < _nr)),
             "The padding must be smaller than the filter size, unless the filters size is 0.");
-        static_assert(0 <= _padding_x && ((_nc==0 && _padding_x == 0) || (_nc!=0 && _padding_x < _nc)), 
+        static_assert(0 <= _padding_x && ((_nc==0 && _padding_x == 0) || (_nc!=0 && _padding_x < _nc)),
             "The padding must be smaller than the filter size, unless the filters size is 0.");
     public:
 
@@ -940,17 +1253,17 @@ namespace dlib
         template <typename SUBNET>
         void forward(const SUBNET& sub, resizable_tensor& output)
         {
-            mp.setup_max_pooling(_nr!=0?_nr:sub.get_output().nr(), 
+            mp.setup_max_pooling(_nr!=0?_nr:sub.get_output().nr(),
                                  _nc!=0?_nc:sub.get_output().nc(),
                                  _stride_y, _stride_x, padding_y_, padding_x_);
 
             mp(output, sub.get_output());
-        } 
+        }
 
         template <typename SUBNET>
         void backward(const tensor& computed_output, const tensor& gradient_input, SUBNET& sub, tensor& /*params_grad*/)
         {
-            mp.setup_max_pooling(_nr!=0?_nr:sub.get_output().nr(), 
+            mp.setup_max_pooling(_nr!=0?_nr:sub.get_output().nr(),
                                  _nc!=0?_nc:sub.get_output().nc(),
                                  _stride_y, _stride_x, padding_y_, padding_x_);
 
@@ -1068,9 +1381,9 @@ namespace dlib
         static_assert(_nc >= 0, "The number of columns in a filter must be >= 0");
         static_assert(_stride_y > 0, "The filter stride must be > 0");
         static_assert(_stride_x > 0, "The filter stride must be > 0");
-        static_assert(0 <= _padding_y && ((_nr==0 && _padding_y == 0) || (_nr!=0 && _padding_y < _nr)), 
+        static_assert(0 <= _padding_y && ((_nr==0 && _padding_y == 0) || (_nr!=0 && _padding_y < _nr)),
             "The padding must be smaller than the filter size, unless the filters size is 0.");
-        static_assert(0 <= _padding_x && ((_nc==0 && _padding_x == 0) || (_nc!=0 && _padding_x < _nc)), 
+        static_assert(0 <= _padding_x && ((_nc==0 && _padding_x == 0) || (_nc!=0 && _padding_x < _nc)),
             "The padding must be smaller than the filter size, unless the filters size is 0.");
 
         avg_pool_(
@@ -1137,17 +1450,17 @@ namespace dlib
         template <typename SUBNET>
         void forward(const SUBNET& sub, resizable_tensor& output)
         {
-            ap.setup_avg_pooling(_nr!=0?_nr:sub.get_output().nr(), 
+            ap.setup_avg_pooling(_nr!=0?_nr:sub.get_output().nr(),
                                  _nc!=0?_nc:sub.get_output().nc(),
                                  _stride_y, _stride_x, padding_y_, padding_x_);
 
             ap(output, sub.get_output());
-        } 
+        }
 
         template <typename SUBNET>
         void backward(const tensor& computed_output, const tensor& gradient_input, SUBNET& sub, tensor& /*params_grad*/)
         {
-            ap.setup_avg_pooling(_nr!=0?_nr:sub.get_output().nr(), 
+            ap.setup_avg_pooling(_nr!=0?_nr:sub.get_output().nr(),
                                  _nc!=0?_nc:sub.get_output().nc(),
                                  _stride_y, _stride_x, padding_y_, padding_x_);
 
@@ -1265,8 +1578,8 @@ namespace dlib
         explicit bn_(
             unsigned long window_size,
             double eps_ = DEFAULT_BATCH_NORM_EPS
-        ) : 
-            num_updates(0), 
+        ) :
+            num_updates(0),
             running_stats_window_size(window_size),
             learning_rate_multiplier(1),
             weight_decay_multiplier(0),
@@ -1281,10 +1594,10 @@ namespace dlib
 
         layer_mode get_mode() const { return mode; }
         unsigned long get_running_stats_window_size () const { return running_stats_window_size; }
-        void set_running_stats_window_size (unsigned long new_window_size ) 
-        { 
+        void set_running_stats_window_size (unsigned long new_window_size )
+        {
             DLIB_CASSERT(new_window_size > 0, "The batch normalization running stats window size can't be 0.");
-            running_stats_window_size = new_window_size; 
+            running_stats_window_size = new_window_size;
         }
         double get_eps() const { return eps; }
 
@@ -1344,7 +1657,7 @@ namespace dlib
 
                 if (mode == FC_MODE)
                     tt::batch_normalize(eps, output, means, invstds, decay, running_means, running_variances, sub.get_output(), g, b);
-                else 
+                else
                     tt::batch_normalize_conv(eps, output, means, invstds, decay, running_means, running_variances, sub.get_output(), g, b);
             }
             else // we are running in testing mode so we just linearly scale the input tensor.
@@ -1354,7 +1667,7 @@ namespace dlib
                 else
                     tt::batch_normalize_conv_inference(eps, output, sub.get_output(), g, b, running_means, running_variances);
             }
-        } 
+        }
 
         template <typename SUBNET>
         void backward(const tensor& gradient_input, SUBNET& sub, tensor& params_grad)
@@ -1397,7 +1710,7 @@ namespace dlib
         {
             std::string version;
             deserialize(version, in);
-            if (mode == CONV_MODE) 
+            if (mode == CONV_MODE)
             {
                 if (version != "bn_con2")
                     throw serialization_error("Unexpected version '"+version+"' found while deserializing dlib::bn_.");
@@ -1579,12 +1892,12 @@ namespace dlib
         unsigned long get_num_outputs (
         ) const { return num_outputs; }
 
-        void set_num_outputs(long num) 
+        void set_num_outputs(long num)
         {
             DLIB_CASSERT(num > 0);
             if (num != (long)num_outputs)
             {
-                DLIB_CASSERT(get_layer_params().size() == 0, 
+                DLIB_CASSERT(get_layer_params().size() == 0,
                     "You can't change the number of filters in fc_ if the parameter tensor has already been allocated.");
                 num_outputs = num;
             }
@@ -1629,7 +1942,7 @@ namespace dlib
                 auto b = biases(params, weights.size());
                 tt::add(1,output,1,b);
             }
-        } 
+        }
 
         template <typename SUBNET>
         void backward(const tensor& gradient_input, SUBNET& sub, tensor& params_grad)
@@ -1637,13 +1950,13 @@ namespace dlib
             // no point computing the parameter gradients if they won't be used.
             if (learning_rate_multiplier != 0)
             {
-                // compute the gradient of the weight parameters.  
+                // compute the gradient of the weight parameters.
                 auto pw = weights(params_grad, 0);
                 tt::gemm(0,pw, 1,sub.get_output(),true, gradient_input,false);
 
                 if (bias_mode == FC_HAS_BIAS)
                 {
-                    // compute the gradient of the bias parameters.  
+                    // compute the gradient of the bias parameters.
                     auto pb = biases(params_grad, weights.size());
                     tt::assign_bias_gradient(pb, gradient_input);
                 }
@@ -1838,11 +2151,11 @@ namespace dlib
             rnd.fill_uniform(mask);
             tt::threshold(mask, drop_rate);
             tt::multiply(false, output, input, mask);
-        } 
+        }
 
         void backward_inplace(
-            const tensor& gradient_input, 
-            tensor& data_grad, 
+            const tensor& gradient_input,
+            tensor& data_grad,
             tensor& /*params_grad*/
         )
         {
@@ -1876,7 +2189,7 @@ namespace dlib
         }
 
         void clean(
-        ) 
+        )
         {
             mask.clear();
         }
@@ -1935,14 +2248,14 @@ namespace dlib
         void forward_inplace(const tensor& input, tensor& output)
         {
             tt::affine_transform(output, input, val);
-        } 
+        }
 
         inline dpoint map_input_to_output (const dpoint& p) const { return p; }
         inline dpoint map_output_to_input (const dpoint& p) const { return p; }
 
         void backward_inplace(
-            const tensor& gradient_input, 
-            tensor& data_grad, 
+            const tensor& gradient_input,
+            tensor& data_grad,
             tensor& /*params_grad*/
         )
         {
@@ -2034,7 +2347,7 @@ namespace dlib
 
             auto g = gamma(params,0);
             auto b = beta(params,gamma.size());
-            
+
             resizable_tensor temp(item.params);
             auto sg = gamma(temp,0);
             auto sb = beta(temp,gamma.size());
@@ -2078,11 +2391,11 @@ namespace dlib
                 tt::affine_transform(output, input, g, b);
             else
                 tt::affine_transform_conv(output, input, g, b);
-        } 
+        }
 
         void backward_inplace(
-            const tensor& gradient_input, 
-            tensor& data_grad, 
+            const tensor& gradient_input,
+            tensor& data_grad,
             tensor& /*params_grad*/
         )
         {
@@ -2175,7 +2488,7 @@ namespace dlib
         }
 
     private:
-        resizable_tensor params, empty_params; 
+        resizable_tensor params, empty_params;
         alias_tensor gamma, beta;
         layer_mode mode;
     };
@@ -2193,7 +2506,7 @@ namespace dlib
     public:
         const static unsigned long id = tag_id<tag>::id;
 
-        add_prev_() 
+        add_prev_()
         {
         }
 
@@ -2294,7 +2607,7 @@ namespace dlib
     public:
         const static unsigned long id = tag_id<tag>::id;
 
-        mult_prev_() 
+        mult_prev_()
         {
         }
 
@@ -2495,7 +2808,7 @@ namespace dlib
     public:
         const static unsigned long id = tag_id<tag>::id;
 
-        scale_() 
+        scale_()
         {
         }
 
@@ -2512,9 +2825,9 @@ namespace dlib
             DLIB_CASSERT(scales.num_samples() == src.num_samples() &&
                          scales.k()           == src.k() &&
                          scales.nr()          == 1 &&
-                         scales.nc()          == 1, 
+                         scales.nc()          == 1,
                          "scales.k(): " << scales.k() <<
-                         "\nsrc.k(): " << src.k() 
+                         "\nsrc.k(): " << src.k()
                          );
 
             output.copy_size(src);
@@ -2611,7 +2924,7 @@ namespace dlib
     class relu_
     {
     public:
-        relu_() 
+        relu_()
         {
         }
 
@@ -2623,13 +2936,13 @@ namespace dlib
         void forward_inplace(const tensor& input, tensor& output)
         {
             tt::relu(output, input);
-        } 
+        }
 
         void backward_inplace(
             const tensor& computed_output,
-            const tensor& gradient_input, 
-            tensor& data_grad, 
-            tensor& 
+            const tensor& gradient_input,
+            tensor& data_grad,
+            tensor&
         )
         {
             tt::relu_gradient(data_grad, computed_output, gradient_input);
@@ -2696,7 +3009,7 @@ namespace dlib
 
         template <typename SUBNET>
         void forward(
-            const SUBNET& sub, 
+            const SUBNET& sub,
             resizable_tensor& data_output
         )
         {
@@ -2706,12 +3019,12 @@ namespace dlib
 
         template <typename SUBNET>
         void backward(
-            const tensor& gradient_input, 
-            SUBNET& sub, 
+            const tensor& gradient_input,
+            SUBNET& sub,
             tensor& params_grad
         )
         {
-            tt::prelu_gradient(sub.get_gradient_input(), sub.get_output(), 
+            tt::prelu_gradient(sub.get_gradient_input(), sub.get_output(),
                 gradient_input, params, params_grad);
         }
 
@@ -2766,7 +3079,7 @@ namespace dlib
     class sig_
     {
     public:
-        sig_() 
+        sig_()
         {
         }
 
@@ -2778,13 +3091,13 @@ namespace dlib
         void forward_inplace(const tensor& input, tensor& output)
         {
             tt::sigmoid(output, input);
-        } 
+        }
 
         void backward_inplace(
             const tensor& computed_output,
-            const tensor& gradient_input, 
-            tensor& data_grad, 
-            tensor& 
+            const tensor& gradient_input,
+            tensor& data_grad,
+            tensor&
         )
         {
             tt::sigmoid_gradient(data_grad, computed_output, gradient_input);
@@ -2834,7 +3147,7 @@ namespace dlib
     class htan_
     {
     public:
-        htan_() 
+        htan_()
         {
         }
 
@@ -2849,13 +3162,13 @@ namespace dlib
         void forward_inplace(const tensor& input, tensor& output)
         {
             tt::tanh(output, input);
-        } 
+        }
 
         void backward_inplace(
             const tensor& computed_output,
-            const tensor& gradient_input, 
-            tensor& data_grad, 
-            tensor& 
+            const tensor& gradient_input,
+            tensor& data_grad,
+            tensor&
         )
         {
             tt::tanh_gradient(data_grad, computed_output, gradient_input);
@@ -2902,7 +3215,7 @@ namespace dlib
     class softmax_
     {
     public:
-        softmax_() 
+        softmax_()
         {
         }
 
@@ -2914,13 +3227,13 @@ namespace dlib
         void forward_inplace(const tensor& input, tensor& output)
         {
             tt::softmax(output, input);
-        } 
+        }
 
         void backward_inplace(
             const tensor& computed_output,
-            const tensor& gradient_input, 
-            tensor& data_grad, 
-            tensor& 
+            const tensor& gradient_input,
+            tensor& data_grad,
+            tensor&
         )
         {
             tt::softmax_gradient(data_grad, computed_output, gradient_input);
@@ -2965,7 +3278,7 @@ namespace dlib
     class softmax_all_
     {
     public:
-        softmax_all_() 
+        softmax_all_()
         {
         }
 
@@ -2977,13 +3290,13 @@ namespace dlib
         void forward_inplace(const tensor& input, tensor& output)
         {
             tt::softmax_all(output, input);
-        } 
+        }
 
         void backward_inplace(
             const tensor& computed_output,
-            const tensor& gradient_input, 
-            tensor& data_grad, 
-            tensor& 
+            const tensor& gradient_input,
+            tensor& data_grad,
+            tensor&
         )
         {
             tt::softmax_all_gradient(data_grad, computed_output, gradient_input);
@@ -3063,8 +3376,8 @@ namespace dlib
         template <template<typename> class TAG_TYPE>
         struct concat_helper_impl<TAG_TYPE>{
             constexpr static size_t tag_count() {return 1;}
-            static void list_tags(std::ostream& out) 
-            { 
+            static void list_tags(std::ostream& out)
+            {
                 out << tag_id<TAG_TYPE>::id;
             }
 
@@ -3245,7 +3558,7 @@ namespace dlib
     public:
         explicit l2normalize_(
             double eps_ = DEFAULT_L2_NORM_EPS
-        ) : 
+        ) :
             eps(eps_)
         {
         }
@@ -3261,12 +3574,12 @@ namespace dlib
         {
             tt::inverse_norms(norm, input, eps);
             tt::scale_rows(output, input, norm);
-        } 
+        }
 
         void backward_inplace(
-            const tensor& computed_output, 
-            const tensor& gradient_input, 
-            tensor& data_grad, 
+            const tensor& computed_output,
+            const tensor& gradient_input,
+            tensor& data_grad,
             tensor& /*params_grad*/
         )
         {
@@ -3318,7 +3631,7 @@ namespace dlib
 
         resizable_tensor params; // unused
         // Here only to avoid reallocation and as a cache between forward/backward
-        // functions.  
+        // functions.
         resizable_tensor norm;
         resizable_tensor temp;
     };
@@ -3342,14 +3655,14 @@ namespace dlib
         static_assert(_nc > 0, "The number of columns must be > 0.");
     public:
         extract_(
-        )  
+        )
         {
         }
 
         template <typename SUBNET>
         void setup (const SUBNET& sub)
         {
-            DLIB_CASSERT((long)sub.get_output().size() >= sub.get_output().num_samples()*(_offset+_k*_nr*_nc), 
+            DLIB_CASSERT((long)sub.get_output().size() >= sub.get_output().num_samples()*(_offset+_k*_nr*_nc),
                 "The tensor we are trying to extract from the input tensor is too big to fit into the input tensor.");
 
             aout = alias_tensor(sub.get_output().num_samples(), _k*_nr*_nc);
@@ -3369,7 +3682,7 @@ namespace dlib
             auto out = aout(output,0);
             auto in = ain(sub.get_output(),0);
             tt::copy_tensor(false, out, 0, in, _offset, _k*_nr*_nc);
-        } 
+        }
 
         template <typename SUBNET>
         void backward(const tensor& gradient_input, SUBNET& sub, tensor& /*params_grad*/)

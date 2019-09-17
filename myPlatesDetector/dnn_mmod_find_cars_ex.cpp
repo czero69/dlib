@@ -72,10 +72,12 @@ template <typename SUBNET> using _32part_downsampler_fb_v2 = rfireBlock5_v2<32, 
 template <typename SUBNET> using downsampler2  = _32part_downsampler_fb<_32part_downsampler_fb<relu<affine<con5d<16,SUBNET>>>>>;
 template <typename SUBNET> using downsampler2_v2  = _32part_downsampler_fb_v2<_32part_downsampler_fb_v2<relu<affine<con5d<16,SUBNET>>>>>;
 
-//using net_type = loss_mmod<con<1,9,9,1,1,rcon5<downsampler<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
+using net_type = loss_mmod<con<1,9,9,1,1,rcon5<downsampler<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
 //using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5<downsampler2<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
-using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5_v2<downsampler2_v2<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
-//using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5_v2<downsampler2_v2<rcon1_1< 1 , input_rgb_image_pyramid<pyramid_down<4>>>>>>>;
+
+//using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5_v2<downsampler2_v2<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
+
+// not yet rdy//using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5_v2<downsampler2_v2<rcon1_1< 1 , input_rgb_image_pyramid<pyramid_down<4>>>>>>>;
 
 // ----------------------------------------------------------------------------------------
 
@@ -230,7 +232,7 @@ int main(int argc, char** argv) try
 
     //std::vector<matrix<rgb_pixel>> imgVec;
 
-    exit(0);
+    //exit(0);
     cout << "Hit enter to view the intermediate processing steps" << endl;
     cin.get();
 

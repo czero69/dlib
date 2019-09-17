@@ -1194,8 +1194,13 @@ namespace dlib
             output_label_type final_dets;
             for (long i = 0; i < output_tensor.num_samples(); ++i)
             {
+
+           #ifdef DLIB_USE_CUDA
                 tensor_to_dets_noHostCopy(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
-                // tensor_to_dets_parallel_TBB(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
+           #else
+                tensor_to_dets_parallel_TBB(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
+           #endif
+                //tensor_to_dets_parallel_TBB(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
 
                 // to-label checking cout
                 // std::cout << "we are making this method to_label !!! " << std::endl;
@@ -1605,12 +1610,6 @@ namespace dlib
                 }
             }
             std::sort(dets_accum.rbegin(), dets_accum.rend());
-
-            // TIME MEASURE
-            // auto finishTime = std::chrono::high_resolution_clock::now();
-            // std::chrono::duration<double> elapsedTime = finishTime - startTime;
-            // std::cout << "Elapsed time for tensor_to_dets: " << elapsedTime.count() * 1000 << " ms\n";
-            // end TIME MEASURE
         }
 
         template <typename net_type>
@@ -1633,35 +1632,24 @@ namespace dlib
                 DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size());
             }
 
-            // CUDA KERNEL TEST
+            dets_accum.clear();
 
             // optimisation here is: instead of post-processing on cpu, do post-processing (rect searching) in cuda directly,
             // and return only rects metadata wich is usually much much less in SIZE than full tensor feature maps/layers
             // myFullTensorsDeviceToHostCpy On False will run on cuda Kernel and will avoid large host copy (cudaMemCopy 8MB, 30MB, how large your image is(?))
             // if you set true cuda kernel will not be used, huge copy cudamemcopy will be performed, and tbb will be used to search rects on cpu (some speed-up also, but remember,
             // avoiding huge HtoD copies is bigger deal here
-            bool myFullTensorsDeviceToHostCpy = false;
-            if(! myFullTensorsDeviceToHostCpy)
-            {
-            std::vector<intermediate_detection> dets_from_myCpy;
-
-            // TIME MEASURE
-            // auto startTime_devThresh = std::chrono::high_resolution_clock::now();
-            // end TIME MEASURE -----
-
 
             std::vector<MyRectAndOffset> myRects;
             const float* dev_data = output_tensor.getDeviceDataPointer() + output_tensor.k()*output_tensor.nr()*output_tensor.nc()*i; // data pointer in device (gpu)
             const long int nr_m_nc = output_tensor.nr()*output_tensor.nc();
             const size_t det_win_size = options.detector_windows.size();
 
+#ifdef DLIB_USE_CUDA
             cuda::get_rects_from_device2host(myRects, dev_data, nr_m_nc, det_win_size, adjust_threshold, options.use_bounding_box_regression);
-
-            // TIME MEASURE
-            //auto endTime_devThresh = std::chrono::high_resolution_clock::now();
-            //std::chrono::duration<double> elapsedTime_devThresh = endTime_devThresh - startTime_devThresh;
-            //std::cout << "Elapsed time for _devThresh: " << elapsedTime_devThresh.count() * 1000 << " ms\n";
-            // end TIME MEASURE -----
+#else
+            std::cout << "error - you can't use noHostCopy in non-gpu setting" << std::endl;
+#endif
 
             for (auto && mr : myRects)
             {
@@ -1676,19 +1664,27 @@ namespace dlib
                 drectangle rect = centered_drect(p, options.detector_windows[mr.k].width, options.detector_windows[mr.k].height);
                 rect = input_layer(net).tensor_space_to_image_space(input_tensor,rect);
 
-                dets_from_myCpy.push_back(intermediate_detection(rect, mr.score, (mr.k*output_tensor.nr() + r)*output_tensor.nc() + c, mr.k));
+                dets_accum.push_back(intermediate_detection(rect, mr.score, (mr.k*output_tensor.nr() + r)*output_tensor.nc() + c, mr.k));
                 if (options.use_bounding_box_regression)
                 {
-                    dets_from_myCpy.back().tensor_offset_dx = mr.dx;
-                    dets_from_myCpy.back().tensor_offset_dy = mr.dy;
-                    dets_from_myCpy.back().tensor_offset_dw = mr.dw;
-                    dets_from_myCpy.back().tensor_offset_dh = mr.dh;
+                    dets_accum.back().tensor_offset_dx = mr.dx;
+                    dets_accum.back().tensor_offset_dy = mr.dy;
+                    dets_accum.back().tensor_offset_dw = mr.dw;
+                    dets_accum.back().tensor_offset_dh = mr.dh;
+
+                    // apply BBR
+                    /*
+                    double dw = std::exp(mr.dw);
+                    double dh = std::exp(mr.dh);
+                    double w = rect.width()-1;
+                    double h = rect.height()-1;
+                    rect = translate_rect(rect, dpoint(mr.dx*w,mr.dy*h));
+                    rect = centered_drect(rect, w*dw+1, h*dh+1);
+                    dets_accum.back().rect_bbr = rect;*/
+
                 }
             }
 
-            dets_accum = dets_from_myCpy ;
-            }
-            // ----------------
             std::sort(dets_accum.rbegin(), dets_accum.rend());
         }
 

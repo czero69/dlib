@@ -100,6 +100,9 @@ namespace dlib
 
         const float* getDeviceDataPointer() const
         {
+#ifndef DLIB_USE_CUDA
+            DLIB_CASSERT(false, "CUDA NOT ENABLED");
+#endif
             return data_device.get();
         }
 
