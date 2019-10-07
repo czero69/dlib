@@ -29,6 +29,11 @@ namespace dlib
             tensor& t,
             float value
         );
+
+        void add_constant (
+                tensor& t,
+                float value
+        );
     }
 
 // ----------------------------------------------------------------------------------------
@@ -114,6 +119,34 @@ namespace dlib
             *this *= 1.0/val;
             return *this;
         }
+
+        tensor& operator-= (float val)
+        {
+#ifdef DLIB_USE_CUDA
+            cuda::add_constant(*this, -1.0*val);
+            return *this;
+#else
+            for (auto& d : *this)
+                d -= val;
+
+            return *this;
+#endif
+        }
+
+        tensor& operator+= (float val)
+        {
+#ifdef DLIB_USE_CUDA
+            cuda::add_constant(*this, val);
+            return *this;
+#else
+            for (auto& d : *this)
+                d += val;
+
+            return *this;
+#endif
+        }
+
+
 
         template <typename EXP>
         tensor& operator= (const matrix_exp<EXP>& item)

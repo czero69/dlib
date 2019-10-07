@@ -1244,6 +1244,22 @@ namespace dlib
         {
             launch_kernel(_scale_tensor, max_jobs(t.size()), t.device(), t.size(), value);
         }
+    //---------------------------------------------------------------------
+
+        __global__ void _add_constant(float* out, size_t n, const float val)
+        {
+            for (auto i : grid_stride_range(0, n))
+                out[i] += val;
+        }
+
+        void add_constant (
+            tensor& t,
+            float value
+        )
+        {
+            launch_kernel(_add_constant, max_jobs(t.size()), t.device(), t.size(), value);
+        }
+
 
     // -----------------------------------------------------------------------------------
     // -----------------------------------------------------------------------------------
@@ -1569,6 +1585,49 @@ namespace dlib
 
     // ----------------------------------------------------------------------------------------
 
+        __global__ void _create_coord_map (float* dest, const long nr, const long nc,const size_t k_offset, const size_t nr_nc, const size_t nr_nc_k, const size_t num_samples)
+        {
+
+            for(int n = 0; n < num_samples; n++)
+                for(int i = blockIdx.x * blockDim.x + threadIdx.x + n*nr_nc_k + k_offset*nr_nc;
+                    i < 1*nr_nc + k_offset*nr_nc + n*nr_nc_k;
+                    i += blockDim.x * gridDim.x)
+                {
+                    // get score, NOTE: belwow % and / should be optimized
+                    float real_i = (float)((i - n*nr_nc_k - k_offset*nr_nc) % nc);
+                    float real_j = (float)((i - n*nr_nc_k - k_offset*nr_nc - real_i)/nc);
+
+                    dest[i] = (real_i/((float)nc - 1.0))*2.0 - 1.0;
+                    dest[i + nr_nc] = (real_j/((float)nr - 1.0))*2.0 - 1.0;
+                 }
+        }
+
+        void create_coord_map(
+            tensor& dest,
+            size_t dest_k_offset,
+            size_t count_k
+        )
+        {
+            // for every N samples, fills two channels (feature maps) starting from k=dest_k_offset
+            // with coordinate value casted to the <-1, 1> range;
+            const size_t dest_sample_size = static_cast<size_t>(dest.nc() * dest.nr() * dest.k());
+
+            //sconst size_t block_size = count_k * dest.nc() * dest.nr();
+            const size_t map_size = dest.nc() * dest.nr();
+
+            DLIB_CASSERT(dest.k() - dest_k_offset >= count_k, "Not enough space in dest tensor");
+            DLIB_CASSERT(count_k == 2, "coord maps others than k=2 are not supported");
+
+            float* dest_p = dest.device() + dest_k_offset * dest.nc() * dest.nr();
+            const long nr = dest.nr();
+            const long nc = dest.nc();
+
+            //  const size_t num_samples)
+            _create_coord_map<<< 32, 256 >>>(dest_p, nr, nc, dest_k_offset, map_size, dest_sample_size, dest.num_samples());
+
+        }
+    // ----------------------------------------------------------------------------------------
+
         __global__ void _cuda_copy_tensor_add_to (float* dest, size_t size,  const float* src,  size_t dest_stride, size_t src_stride, size_t block_size)
         {
             for(auto i : grid_stride_range(0, size)) 
@@ -1603,6 +1662,13 @@ namespace dlib
 
             const size_t block_size = count_k * dest.nc() * dest.nr();
 
+            if(!(dest.num_samples() == src.num_samples() &&
+                dest.nc() == src.nc() && dest.nr() == src.nr()))
+            {
+                std::cout << "error: " << std::endl;
+                std::cout << dest.num_samples() << ", " << src.num_samples() << ", " <<
+                             dest.nc() << ", " << src.nc() <<", " <<  dest.nr() << ", " << src.nr() << ", " << std::endl;
+            }
             DLIB_CASSERT(dest.num_samples() == src.num_samples() &&
                          dest.nc() == src.nc() && dest.nr() == src.nr(), "All sources should fit into dest tensor size");
             DLIB_CASSERT(dest.k() - dest_k_offset >= count_k, "Not enough space in dest tensor");

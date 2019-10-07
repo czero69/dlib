@@ -482,6 +482,14 @@ namespace dlib
 
     // -----------------------------------------------------------------------------------
 
+        void create_coord_map(
+            tensor& dest,
+            size_t dest_k_offset = 0,
+            size_t count_k = 2
+        );
+
+    // ----------------------------------
+
         void copy_tensor(
             bool add_to,
             tensor& dest,

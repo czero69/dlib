@@ -668,6 +668,1391 @@ namespace dlib
         yes
     };
 
+    // mmod implementation extended by 2 ideas:
+    // - 4 parts (x,y points) instead of box rects
+    // - pixel-forward-conv: calculate regression coordinate values only when needed (only when detectors hit sth).
+    // Instead of calculating conv over entire feature maps to get entire feature maps that describes each
+    // 'part' regression (to help you better understand, in legacy mmod it woud be
+    // reach box regression, namely values dx,dy,dw,dh for each channel (detector_windows.size()).
+
+    struct mmod_parts_options
+    {
+    public:
+
+        struct detector_window_details
+        {
+            detector_window_details() = default;
+            detector_window_details(unsigned long w, unsigned long h) : width(w), height(h) {}
+            detector_window_details(unsigned long w, unsigned long h, const std::string& l) : width(w), height(h), label(l) {}
+
+            unsigned long width = 0;
+            unsigned long height = 0;
+            std::string label;
+
+            friend inline void serialize(const detector_window_details& item, std::ostream& out)
+            {
+                int version = 2;
+                serialize(version, out);
+                serialize(item.width, out);
+                serialize(item.height, out);
+                serialize(item.label, out);
+            }
+
+            friend inline void deserialize(detector_window_details& item, std::istream& in)
+            {
+                int version = 0;
+                deserialize(version, in);
+                if (version != 1 && version != 2)
+                    throw serialization_error("Unexpected version found while deserializing dlib::mmod_parts_options::detector_window_details");
+                deserialize(item.width, in);
+                deserialize(item.height, in);
+                if (version == 2)
+                    deserialize(item.label, in);
+            }
+
+        };
+
+        mmod_parts_options() = default;
+
+
+        resizable_tensor params; // params transferred from training layer needed to compute
+                                 // parts regression (used here only in inference (forward pass))
+        alias_tensor filters, biases;
+
+        std::vector<detector_window_details> detector_windows;
+        double loss_per_false_alarm = 1;
+        double loss_per_missed_target = 1;
+        double truth_match_iou_threshold = 0.5;
+        test_box_overlap overlaps_nms = test_box_overlap(0.4);
+        test_box_overlap overlaps_ignore;
+        bool use_bounding_box_regression = false;
+        double bbr_lambda = 100;
+
+        use_image_pyramid assume_image_pyramid = use_image_pyramid::yes;
+
+        mmod_parts_options (
+            const std::vector<std::vector<mmod_rect>>& boxes,
+            const unsigned long target_size,       // We want the length of the longest dimension of the detector window to be this.
+            const unsigned long min_target_size,   // But we require that the smallest dimension of the detector window be at least this big.
+            const double min_detector_window_overlap_iou = 0.75
+        )
+        {
+            DLIB_CASSERT(0 < min_target_size && min_target_size <= target_size);
+            DLIB_CASSERT(0.5 < min_detector_window_overlap_iou && min_detector_window_overlap_iou < 1);
+
+            // Figure out what detector windows we will need.
+            for (auto& label : get_labels(boxes))
+            {
+                for (auto ratio : find_covering_aspect_ratios(boxes, test_box_overlap(min_detector_window_overlap_iou), label))
+                {
+                    double detector_width;
+                    double detector_height;
+                    if (ratio < 1)
+                    {
+                        detector_height = target_size;
+                        detector_width = ratio*target_size;
+                        if (detector_width < min_target_size)
+                        {
+                            detector_height = min_target_size/ratio;
+                            detector_width = min_target_size;
+                        }
+                    }
+                    else
+                    {
+                        detector_width = target_size;
+                        detector_height = target_size/ratio;
+                        if (detector_height < min_target_size)
+                        {
+                            detector_width = min_target_size*ratio;
+                            detector_height = min_target_size;
+                        }
+                    }
+
+                    detector_window_details p((unsigned long)std::round(detector_width), (unsigned long)std::round(detector_height), label);
+                    detector_windows.push_back(p);
+                }
+            }
+
+            DLIB_CASSERT(detector_windows.size() != 0, "You can't call mmod_options's constructor with a set of boxes that is empty (or only contains ignored boxes).");
+
+            set_overlap_nms(boxes);
+        }
+
+        mmod_parts_options (
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& boxes,
+            const unsigned long target_size,       // We want the length of the longest dimension of the detector window to be this.
+            const unsigned long min_target_size,   // But we require that the smallest dimension of the detector window be at least this big.
+            const double min_detector_window_overlap_iou = 0.75
+        )
+        {
+            DLIB_CASSERT(0 < min_target_size && min_target_size <= target_size);
+            DLIB_CASSERT(0.5 < min_detector_window_overlap_iou && min_detector_window_overlap_iou < 1);
+
+            // Figure out what detector windows we will need.
+            for (auto& label : get_labels(boxes))
+            {
+                for (auto ratio : find_covering_aspect_ratios(boxes, test_box_overlap(min_detector_window_overlap_iou), label))
+                {
+                    double detector_width;
+                    double detector_height;
+                    if (ratio < 1)
+                    {
+                        detector_height = target_size;
+                        detector_width = ratio*target_size;
+                        if (detector_width < min_target_size)
+                        {
+                            detector_height = min_target_size/ratio;
+                            detector_width = min_target_size;
+                        }
+                    }
+                    else
+                    {
+                        detector_width = target_size;
+                        detector_height = target_size/ratio;
+                        if (detector_height < min_target_size)
+                        {
+                            detector_width = min_target_size*ratio;
+                            detector_height = min_target_size;
+                        }
+                    }
+
+                    detector_window_details p((unsigned long)std::round(detector_width), (unsigned long)std::round(detector_height), label);
+                    detector_windows.push_back(p);
+                }
+            }
+
+            DLIB_CASSERT(detector_windows.size() != 0, "You can't call mmod_options's constructor with a set of boxes that is empty (or only contains ignored boxes).");
+
+            set_overlap_nms(boxes);
+        }
+
+        mmod_parts_options(
+            use_image_pyramid assume_image_pyramid,
+            const std::vector<std::vector<mmod_rect>>& boxes,
+            const double min_detector_window_overlap_iou = 0.75
+        )
+            : assume_image_pyramid(assume_image_pyramid)
+        {
+            DLIB_CASSERT(assume_image_pyramid == use_image_pyramid::no);
+            DLIB_CASSERT(0.5 < min_detector_window_overlap_iou && min_detector_window_overlap_iou < 1);
+
+            // Figure out what detector windows we will need.
+            for (auto& label : get_labels(boxes))
+            {
+                for (auto rectangle : find_covering_rectangles(boxes, test_box_overlap(min_detector_window_overlap_iou), label))
+                {
+                    detector_windows.push_back(detector_window_details(rectangle.width(), rectangle.height(), label));
+                }
+            }
+
+            DLIB_CASSERT(detector_windows.size() != 0, "You can't call mmod_options's constructor with a set of boxes that is empty (or only contains ignored boxes).");
+
+            set_overlap_nms(boxes);
+        }
+
+    private:
+
+        void set_overlap_nms(const std::vector<std::vector<mmod_rect>>& boxes)
+        {
+            // Convert from mmod_rect to rectangle so we can call
+            // find_tight_overlap_tester().
+            std::vector<std::vector<rectangle>> temp;
+            for (auto&& bi : boxes)
+            {
+                std::vector<rectangle> rtemp;
+                for (auto&& b : bi)
+                {
+                    if (b.ignore)
+                        continue;
+                    rtemp.push_back(b.rect);
+                }
+                temp.push_back(std::move(rtemp));
+            }
+            overlaps_nms = find_tight_overlap_tester(temp);
+            // Relax the non-max-suppression a little so that it doesn't accidentally make
+            // it impossible for the detector to output boxes matching the training data.
+            // This could be a problem with the tightest possible nms test since there is
+            // some small variability in how boxes get positioned between the training data
+            // and the coordinate system used by the detector when it runs.  So relaxing it
+            // here takes care of that.
+            auto iou_thresh             = advance_toward_1(overlaps_nms.get_iou_thresh());
+            auto percent_covered_thresh = advance_toward_1(overlaps_nms.get_percent_covered_thresh());
+            overlaps_nms = test_box_overlap(iou_thresh, percent_covered_thresh);
+        }
+
+        void set_overlap_nms(const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& boxes)
+        {
+            // Convert from mmod_rect to rectangle so we can call
+            // find_tight_overlap_tester().
+            std::vector<std::vector<rectangle>> temp;
+            for (auto&& bi : boxes)
+            {
+                std::vector<rectangle> rtemp;
+                for (auto&& b : bi)
+                {
+                    if (b.first.ignore)
+                        continue;
+                    rtemp.push_back(b.first.rect);
+                }
+                temp.push_back(std::move(rtemp));
+            }
+            overlaps_nms = find_tight_overlap_tester(temp);
+            // Relax the non-max-suppression a little so that it doesn't accidentally make
+            // it impossible for the detector to output boxes matching the training data.
+            // This could be a problem with the tightest possible nms test since there is
+            // some small variability in how boxes get positioned between the training data
+            // and the coordinate system used by the detector when it runs.  So relaxing it
+            // here takes care of that.
+            auto iou_thresh             = advance_toward_1(overlaps_nms.get_iou_thresh());
+            auto percent_covered_thresh = advance_toward_1(overlaps_nms.get_percent_covered_thresh());
+            overlaps_nms = test_box_overlap(iou_thresh, percent_covered_thresh);
+        }
+
+        static double advance_toward_1 (
+            double val
+        )
+        {
+            if (val < 1)
+                val += (1-val)*0.1;
+            return val;
+        }
+
+        static size_t count_overlaps (
+            const std::vector<rectangle>& rects,
+            const test_box_overlap& overlaps,
+            const rectangle& ref_box
+        )
+        {
+            size_t cnt = 0;
+            for (auto& b : rects)
+            {
+                if (overlaps(b, ref_box))
+                    ++cnt;
+            }
+            return cnt;
+        }
+
+        static std::vector<rectangle> find_rectangles_overlapping_all_others (
+            std::vector<rectangle> rects,
+            const test_box_overlap& overlaps
+        )
+        {
+            std::vector<rectangle> exemplars;
+            dlib::rand rnd;
+
+            while(rects.size() > 0)
+            {
+                // Pick boxes at random and see if they overlap a lot of other boxes.  We will try
+                // 500 different boxes each iteration and select whichever hits the most others to
+                // add to our exemplar set.
+                rectangle best_ref_box;
+                size_t best_cnt = 0;
+                for (int iter = 0; iter < 500; ++iter)
+                {
+                    rectangle ref_box = rects[rnd.get_random_64bit_number()%rects.size()];
+                    size_t cnt = count_overlaps(rects, overlaps, ref_box);
+                    if (cnt >= best_cnt)
+                    {
+                        best_cnt = cnt;
+                        best_ref_box = ref_box;
+                    }
+                }
+
+                // Now mark all the boxes the new ref box hit as hit.
+                for (size_t i = 0; i < rects.size(); ++i)
+                {
+                    if (overlaps(rects[i], best_ref_box))
+                    {
+                        // remove box from rects so we don't hit it again later
+                        swap(rects[i], rects.back());
+                        rects.pop_back();
+                        --i;
+                    }
+                }
+
+                exemplars.push_back(best_ref_box);
+            }
+
+            return exemplars;
+        }
+
+        static std::set<std::string> get_labels (
+            const std::vector<std::vector<mmod_rect>>& rects
+        )
+        {
+            std::set<std::string> labels;
+            for (auto& rr : rects)
+            {
+                for (auto& r : rr)
+                    labels.insert(r.label);
+            }
+            return labels;
+        }
+
+        static std::set<std::string> get_labels (
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& rects
+        )
+        {
+            std::set<std::string> labels;
+            for (auto& rr : rects)
+            {
+                for (auto& r : rr)
+                    labels.insert(r.first.label);
+            }
+            return labels;
+        }
+
+        static std::vector<double> find_covering_aspect_ratios (
+            const std::vector<std::vector<mmod_rect>>& rects,
+            const test_box_overlap& overlaps,
+            const std::string& label
+        )
+        {
+            std::vector<rectangle> boxes;
+            // Make sure all the boxes have the same size and position, so that the only thing our
+            // checks for overlap will care about is aspect ratio (i.e. scale and x,y position are
+            // ignored).
+            for (auto& bb : rects)
+            {
+                for (auto&& b : bb)
+                {
+                    if (!b.ignore && b.label == label)
+                        boxes.push_back(move_rect(set_rect_area(b.rect,400*400), point(0,0)));
+                }
+            }
+
+            std::vector<double> ratios;
+            for (auto r : find_rectangles_overlapping_all_others(boxes, overlaps))
+                ratios.push_back(r.width()/(double)r.height());
+            return ratios;
+        }
+
+        static std::vector<double> find_covering_aspect_ratios (
+            const std::vector<std::vector<std::pair<mmod_rect, std::vector<dlib::point>>>>& rects,
+            const test_box_overlap& overlaps,
+            const std::string& label
+        )
+        {
+            std::vector<rectangle> boxes;
+            // Make sure all the boxes have the same size and position, so that the only thing our
+            // checks for overlap will care about is aspect ratio (i.e. scale and x,y position are
+            // ignored).
+            for (auto& bb : rects)
+            {
+                for (auto&& b : bb)
+                {
+                    if (!b.first.ignore && b.first.label == label)
+                        boxes.push_back(move_rect(set_rect_area(b.first.rect,400*400), point(0,0)));
+                }
+            }
+
+            std::vector<double> ratios;
+            for (auto r : find_rectangles_overlapping_all_others(boxes, overlaps))
+                ratios.push_back(r.width()/(double)r.height());
+            return ratios;
+        }
+
+        static std::vector<dlib::rectangle> find_covering_rectangles (
+            const std::vector<std::vector<mmod_rect>>& rects,
+            const test_box_overlap& overlaps,
+            const std::string& label
+        )
+        {
+            std::vector<rectangle> boxes;
+            // Make sure all the boxes have the same position, so that the we only check for
+            // width and height.
+            for (auto& bb : rects)
+            {
+                for (auto&& b : bb)
+                {
+                    if (!b.ignore && b.label == label)
+                        boxes.push_back(rectangle(b.rect.width(), b.rect.height()));
+                }
+            }
+
+            return find_rectangles_overlapping_all_others(boxes, overlaps);
+        }
+    };
+
+    inline void serialize(const mmod_parts_options& item, std::ostream& out)
+    {
+        int version = 4;
+
+        serialize(version, out);
+        serialize(item.detector_windows, out);
+        serialize(item.loss_per_false_alarm, out);
+        serialize(item.loss_per_missed_target, out);
+        serialize(item.truth_match_iou_threshold, out);
+        serialize(item.overlaps_nms, out);
+        serialize(item.overlaps_ignore, out);
+        serialize(static_cast<uint8_t>(item.assume_image_pyramid), out);
+        serialize(item.use_bounding_box_regression, out);
+        serialize(item.bbr_lambda, out);
+    }
+
+    inline void deserialize(mmod_parts_options& item, std::istream& in)
+    {
+        int version = 0;
+        deserialize(version, in);
+        if (!(1 <= version && version <= 4))
+            throw serialization_error("Unexpected version found while deserializing dlib::mmod_parts_options");
+        if (version == 1)
+        {
+            unsigned long width;
+            unsigned long height;
+            deserialize(width, in);
+            deserialize(height, in);
+            item.detector_windows = {mmod_parts_options::detector_window_details(width, height)};
+        }
+        else
+        {
+            deserialize(item.detector_windows, in);
+        }
+        deserialize(item.loss_per_false_alarm, in);
+        deserialize(item.loss_per_missed_target, in);
+        deserialize(item.truth_match_iou_threshold, in);
+        deserialize(item.overlaps_nms, in);
+        deserialize(item.overlaps_ignore, in);
+        item.assume_image_pyramid = use_image_pyramid::yes;
+        if (version >= 3)
+        {
+            uint8_t assume_image_pyramid = 0;
+            deserialize(assume_image_pyramid, in);
+            item.assume_image_pyramid = static_cast<use_image_pyramid>(assume_image_pyramid);
+        }
+        item.use_bounding_box_regression = mmod_parts_options().use_bounding_box_regression; // use default value since this wasn't provided
+        item.bbr_lambda = mmod_parts_options().bbr_lambda; // use default value since this wasn't provided
+        if (version >= 4)
+        {
+            deserialize(item.use_bounding_box_regression, in);
+            deserialize(item.bbr_lambda, in);
+        }
+    }
+
+// ----------------------------------------------------------------------------------------
+
+    template<
+            int TAG_PARTS
+            >
+    class loss_mmod_parts_
+    {
+        struct intermediate_detection
+        {
+            intermediate_detection() = default;
+
+            intermediate_detection(
+                rectangle rect_
+            ) : rect(rect_), rect_bbr(rect_) {}
+
+            intermediate_detection(
+                rectangle rect_,
+                double detection_confidence_,
+                size_t tensor_offset_,
+                long channel
+            ) : rect(rect_), detection_confidence(detection_confidence_), tensor_offset(tensor_offset_), tensor_channel(channel), rect_bbr(rect_) {}
+
+            // rect is the rectangle you get without any bounding box regression.  So it's
+            // the basic sliding window box (aka, the "anchor box").
+            rectangle rect;
+            double detection_confidence = 0;
+            size_t tensor_offset = 0;
+            long tensor_channel = 0;
+
+            // rect_bbr = rect + bounding box regression.  So more accurate.  Or if bbr is off then
+            // this is just rect.  The important thing about rect_bbr is that its the
+            // rectangle we use for doing NMS.
+            drectangle rect_bbr;
+            size_t tensor_offset_dx = 0;
+            size_t tensor_offset_dy = 0;
+            size_t tensor_offset_dw = 0;
+            size_t tensor_offset_dh = 0;
+
+            // but actually it can be in mmod class itself (?)
+
+            bool operator<(const intermediate_detection& item) const { return detection_confidence < item.detection_confidence; }
+        };
+
+    public:
+
+        typedef std::vector<mmod_rect> training_label_type;
+        typedef std::vector<mmod_rect> output_label_type;
+
+        loss_mmod_parts_() {}
+
+        loss_mmod_parts_(mmod_parts_options options_) : options(options_) {}
+
+        const mmod_parts_options& get_options (
+        ) const { return options; }
+
+        template <
+            typename SUB_TYPE,
+            typename label_iterator
+            >
+        void to_label (
+            const tensor& input_tensor,
+            const SUB_TYPE& sub,
+            label_iterator iter,
+            double adjust_threshold = 0
+        ) const
+        {
+            const tensor& output_tensor = sub.get_output();
+
+            //layer<3>(net).layer_details().num_filters();
+            //SUBNET& sub;
+            //decltype(layer<TAG_PARTS>(sub).get_output()) && t2 = layer<TAG_PARTS>(sub).get_output();
+
+            // todo: passing filters bias params to cudnn, now get them
+            // try to take from *relu* ? pls check
+            std::cout << "layer<TAG_PARTS - 1>" << "\t" << layer<TAG_PARTS - 1>(sub).layer_details() << std::endl;
+
+            // todo: Accessing this layer's get_output() is disabled because an in-place layer has been stacked on top of it.
+            const tensor& output_tensor2 = layer<TAG_PARTS - 2>(sub).get_output(); // -1 because here sub is -1 relative to net. User will define TAR_PARTS according to Net. @TODO improve impl readability here if possible
+            //std::cout << "from tolabel method, output_tensor2.k():" << output_tensor2.k() << std::endl;
+
+            if (options.use_bounding_box_regression)
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size()*5);
+            }
+            else
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size());
+            }
+            DLIB_CASSERT(input_tensor.num_samples() == output_tensor.num_samples());
+            DLIB_CASSERT(sub.sample_expansion_factor() == 1,  sub.sample_expansion_factor());
+
+            std::vector<intermediate_detection> dets_accum;
+            output_label_type final_dets;
+            for (long i = 0; i < output_tensor.num_samples(); ++i)
+            {
+
+           #ifdef DLIB_USE_CUDA
+                tensor_to_dets(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
+           #else
+                tensor_to_dets_parallel_TBB(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
+           #endif
+                //tensor_to_dets_parallel_TBB(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
+
+                // end to-label checking cout
+
+                // Do non-max suppression
+                final_dets.clear();
+                for (unsigned long i = 0; i < dets_accum.size(); ++i)
+                {
+                    if (overlaps_any_box_nms(final_dets, dets_accum[i].rect_bbr))
+                        continue;
+
+                    final_dets.push_back(mmod_rect(dets_accum[i].rect_bbr,
+                                                   dets_accum[i].detection_confidence,
+                                                   options.detector_windows[dets_accum[i].tensor_channel].label));
+                }
+
+                *iter++ = std::move(final_dets);
+            }
+        }
+
+        template <
+            typename const_label_iterator,
+            typename SUBNET
+            >
+        double compute_loss_value_and_gradient (
+            const tensor& input_tensor,
+            const_label_iterator truth,
+            SUBNET& sub
+        ) const
+        {
+            const tensor& output_tensor = sub.get_output();
+            tensor& grad = sub.get_gradient_input();
+
+            DLIB_CASSERT(input_tensor.num_samples() != 0);
+            DLIB_CASSERT(sub.sample_expansion_factor() == 1);
+            DLIB_CASSERT(input_tensor.num_samples() == grad.num_samples());
+            DLIB_CASSERT(input_tensor.num_samples() == output_tensor.num_samples());
+            if (options.use_bounding_box_regression)
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size()*5);
+            }
+            else
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size());
+            }
+
+            double det_thresh_speed_adjust = 0;
+
+            // we will scale the loss so that it doesn't get really huge
+            const double scale = 1.0/(output_tensor.nr()*output_tensor.nc()*output_tensor.num_samples()*options.detector_windows.size());
+            double loss = 0;
+
+            float* g = grad.host_write_only();
+            for (size_t i = 0; i < grad.size(); ++i)
+                g[i] = 0;
+
+            const float* out_data = output_tensor.host();
+
+            std::vector<intermediate_detection> dets;
+            for (long i = 0; i < output_tensor.num_samples(); ++i)
+            {
+                tensor_to_dets_parallel_TBB(input_tensor, output_tensor, i, dets, -options.loss_per_false_alarm + det_thresh_speed_adjust, sub);
+
+                const unsigned long max_num_dets = 50 + truth->size()*5;
+                // Prevent calls to tensor_to_dets() from running for a really long time
+                // due to the production of an obscene number of detections.
+                const unsigned long max_num_initial_dets = max_num_dets*100;
+                if (dets.size() > max_num_initial_dets)
+                {
+                    det_thresh_speed_adjust = std::max(det_thresh_speed_adjust,dets[max_num_initial_dets].detection_confidence + options.loss_per_false_alarm);
+                }
+
+                std::vector<size_t> truth_idxs;
+                truth_idxs.reserve(truth->size());
+
+                // The loss will measure the number of incorrect detections.  A detection is
+                // incorrect if it doesn't hit a truth rectangle or if it is a duplicate detection
+                // on a truth rectangle.
+                loss += truth->size()*options.loss_per_missed_target;
+                for (auto&& x : *truth)
+                {
+                    if (!x.ignore)
+                    {
+                        size_t k;
+                        point p;
+                        if(image_rect_to_feat_coord(p, input_tensor, x, x.label, sub, k, options.assume_image_pyramid))
+                        {
+                            // Ignore boxes that can't be detected by the CNN.
+                            loss -= options.loss_per_missed_target;
+                            truth_idxs.push_back(0);
+                            continue;
+                        }
+                        const size_t idx = (k*output_tensor.nr() + p.y())*output_tensor.nc() + p.x();
+                        loss -= out_data[idx];
+                        // compute gradient
+                        g[idx] = -scale;
+                        truth_idxs.push_back(idx);
+                    }
+                    else
+                    {
+                        // This box was ignored so shouldn't have been counted in the loss.
+                        loss -= options.loss_per_missed_target;
+                        truth_idxs.push_back(0);
+                    }
+                }
+
+                // Measure the loss augmented score for the detections which hit a truth rect.
+                std::vector<double> truth_score_hits(truth->size(), 0);
+
+                // keep track of which truth boxes we have hit so far.
+                std::vector<bool> hit_truth_table(truth->size(), false);
+
+                std::vector<intermediate_detection> final_dets;
+                // The point of this loop is to fill out the truth_score_hits array.
+                for (unsigned long i = 0; i < dets.size() && final_dets.size() < max_num_dets; ++i)
+                {
+                    if (overlaps_any_box_nms(final_dets, dets[i].rect))
+                        continue;
+
+                    const auto& det_label = options.detector_windows[dets[i].tensor_channel].label;
+
+                    const std::pair<double,unsigned int> hittruth = find_best_match(*truth, dets[i].rect, det_label);
+
+                    final_dets.push_back(dets[i].rect);
+
+                    const double truth_match = hittruth.first;
+                    // if hit truth rect
+                    if (truth_match > options.truth_match_iou_threshold)
+                    {
+                        // if this is the first time we have seen a detect which hit (*truth)[hittruth.second]
+                        const double score = dets[i].detection_confidence;
+                        if (hit_truth_table[hittruth.second] == false)
+                        {
+                            hit_truth_table[hittruth.second] = true;
+                            truth_score_hits[hittruth.second] += score;
+                        }
+                        else
+                        {
+                            truth_score_hits[hittruth.second] += score + options.loss_per_false_alarm;
+                        }
+                    }
+                }
+
+                // Check if any of the truth boxes are unobtainable because the NMS is
+                // killing them.  If so, automatically set those unobtainable boxes to
+                // ignore and print a warning message to the user.
+                for (size_t i = 0; i < hit_truth_table.size(); ++i)
+                {
+                    if (!hit_truth_table[i] && !(*truth)[i].ignore)
+                    {
+                        // So we didn't hit this truth box.  Is that because there is
+                        // another, different truth box, that overlaps it according to NMS?
+                        const std::pair<double,unsigned int> hittruth = find_best_match(*truth, (*truth)[i], i);
+                        if (hittruth.second == i || (*truth)[hittruth.second].ignore)
+                            continue;
+                        rectangle best_matching_truth_box = (*truth)[hittruth.second];
+                        if (options.overlaps_nms(best_matching_truth_box, (*truth)[i]))
+                        {
+                            const size_t idx = truth_idxs[i];
+                            // We are ignoring this box so we shouldn't have counted it in the
+                            // loss in the first place.  So we subtract out the loss values we
+                            // added for it in the code above.
+                            loss -= options.loss_per_missed_target-out_data[idx];
+                            g[idx] = 0;
+                            std::cout << "Warning, ignoring object.  We encountered a truth rectangle located at " << (*truth)[i].rect;
+                            std::cout << " that is suppressed by non-max-suppression ";
+                            std::cout << "because it is overlapped by another truth rectangle located at " << best_matching_truth_box
+                                      << " (IoU:"<< box_intersection_over_union(best_matching_truth_box,(*truth)[i]) <<", Percent covered:"
+                                      << box_percent_covered(best_matching_truth_box,(*truth)[i]) << ")." << std::endl;
+                        }
+                    }
+                }
+
+                hit_truth_table.assign(hit_truth_table.size(), false);
+                final_dets.clear();
+
+                // Now figure out which detections jointly maximize the loss and detection score sum.  We
+                // need to take into account the fact that allowing a true detection in the output, while
+                // initially reducing the loss, may allow us to increase the loss later with many duplicate
+                // detections.
+                for (unsigned long i = 0; i < dets.size() && final_dets.size() < max_num_dets; ++i)
+                {
+                    if (overlaps_any_box_nms(final_dets, dets[i].rect))
+                        continue;
+
+                    const auto& det_label = options.detector_windows[dets[i].tensor_channel].label;
+
+                    const std::pair<double,unsigned int> hittruth = find_best_match(*truth, dets[i].rect, det_label);
+
+                    const double truth_match = hittruth.first;
+                    if (truth_match > options.truth_match_iou_threshold)
+                    {
+                        if (truth_score_hits[hittruth.second] > options.loss_per_missed_target)
+                        {
+                            if (!hit_truth_table[hittruth.second])
+                            {
+                                hit_truth_table[hittruth.second] = true;
+                                final_dets.push_back(dets[i]);
+                                loss -= options.loss_per_missed_target;
+
+                                // Now account for BBR loss and gradient if appropriate.
+                                if (options.use_bounding_box_regression)
+                                {
+                                    double dx = out_data[dets[i].tensor_offset_dx];
+                                    double dy = out_data[dets[i].tensor_offset_dy];
+                                    double dw = out_data[dets[i].tensor_offset_dw];
+                                    double dh = out_data[dets[i].tensor_offset_dh];
+
+                                    dpoint p = dcenter(dets[i].rect_bbr);
+                                    double w = dets[i].rect_bbr.width()-1;
+                                    double h = dets[i].rect_bbr.height()-1;
+                                    drectangle truth_box = (*truth)[hittruth.second].rect;
+                                    dpoint p_truth = dcenter(truth_box);
+
+                                    DLIB_CASSERT(w > 0);
+                                    DLIB_CASSERT(h > 0);
+
+                                    double target_dx = (p_truth.x() - p.x())/w;
+                                    double target_dy = (p_truth.y() - p.y())/h;
+                                    double target_dw = std::log((truth_box.width()-1)/w);
+                                    double target_dh = std::log((truth_box.height()-1)/h);
+
+
+                                    // compute smoothed L1 loss on BBR outputs.  This loss
+                                    // is just the MSE loss when the loss is small and L1
+                                    // when large.
+                                    dx = dx-target_dx;
+                                    dy = dy-target_dy;
+                                    dw = dw-target_dw;
+                                    dh = dh-target_dh;
+
+                                    // use smoothed L1
+                                    double ldx = std::abs(dx)<1 ? 0.5*dx*dx : std::abs(dx)-0.5;
+                                    double ldy = std::abs(dy)<1 ? 0.5*dy*dy : std::abs(dy)-0.5;
+                                    double ldw = std::abs(dw)<1 ? 0.5*dw*dw : std::abs(dw)-0.5;
+                                    double ldh = std::abs(dh)<1 ? 0.5*dh*dh : std::abs(dh)-0.5;
+
+                                    loss += options.bbr_lambda*(ldx + ldy + ldw + ldh);
+
+                                    // now compute the derivatives of the smoothed L1 loss
+                                    ldx = put_in_range(-1,1, dx);
+                                    ldy = put_in_range(-1,1, dy);
+                                    ldw = put_in_range(-1,1, dw);
+                                    ldh = put_in_range(-1,1, dh);
+
+
+                                    // also smoothed L1 gradient goes to gradient output
+                                    g[dets[i].tensor_offset_dx] += scale*options.bbr_lambda*ldx;
+                                    g[dets[i].tensor_offset_dy] += scale*options.bbr_lambda*ldy;
+                                    g[dets[i].tensor_offset_dw] += scale*options.bbr_lambda*ldw;
+                                    g[dets[i].tensor_offset_dh] += scale*options.bbr_lambda*ldh;
+                                }
+                            }
+                            else
+                            {
+                                final_dets.push_back(dets[i]);
+                                loss += options.loss_per_false_alarm;
+                            }
+                        }
+                    }
+                    else if (!overlaps_ignore_box(*truth, dets[i].rect))
+                    {
+                        // didn't hit anything
+                        final_dets.push_back(dets[i]);
+                        loss += options.loss_per_false_alarm;
+                    }
+                }
+
+                for (auto&& x : final_dets)
+                {
+                    loss += out_data[x.tensor_offset];
+                    g[x.tensor_offset] += scale;
+                }
+
+                ++truth;
+                g        += output_tensor.k()*output_tensor.nr()*output_tensor.nc();
+                out_data += output_tensor.k()*output_tensor.nr()*output_tensor.nc();
+            } // END for (long i = 0; i < output_tensor.num_samples(); ++i)
+
+
+            // Here we scale the loss so that it's roughly equal to the number of mistakes
+            // in an image.  Note that this scaling is different than the scaling we
+            // applied to the gradient but it doesn't matter since the loss value isn't
+            // used to update parameters.  It's used only for display and to check if we
+            // have converged.  So it doesn't matter that they are scaled differently and
+            // this way the loss that is displayed is readily interpretable to the user.
+            return loss/output_tensor.num_samples();
+        }
+
+
+        friend void serialize(const loss_mmod_parts_& item, std::ostream& out)
+        {
+            serialize("loss_mmod_parts_", out);
+            serialize(item.options, out);
+        }
+
+        friend void deserialize(loss_mmod_parts_& item, std::istream& in)
+        {
+            std::string version;
+            deserialize(version, in);
+            if (version != "loss_mmod_parts_")
+                throw serialization_error("Unexpected version found while deserializing dlib::loss_mmod_parts_.");
+            deserialize(item.options, in);
+        }
+
+        friend std::ostream& operator<<(std::ostream& out, const loss_mmod_parts_& item)
+        {
+            out << "loss_mmod_parts_\t (";
+
+            out << "detector_windows:(";
+            auto& opts = item.options;
+            for (size_t i = 0; i < opts.detector_windows.size(); ++i)
+            {
+                out << opts.detector_windows[i].width << "x" << opts.detector_windows[i].height;
+                if (i+1 < opts.detector_windows.size())
+                    out << ",";
+            }
+            out << ")";
+            out << ", loss per FA:" << opts.loss_per_false_alarm;
+            out << ", loss per miss:" << opts.loss_per_missed_target;
+            out << ", truth match IOU thresh:" << opts.truth_match_iou_threshold;
+            out << ", use_bounding_box_regression:" << opts.use_bounding_box_regression;
+            if (opts.use_bounding_box_regression)
+                out << ", bbr_lambda:" << opts.bbr_lambda;
+            out << ", overlaps_nms:("<<opts.overlaps_nms.get_iou_thresh()<<","<<opts.overlaps_nms.get_percent_covered_thresh()<<")";
+            out << ", overlaps_ignore:("<<opts.overlaps_ignore.get_iou_thresh()<<","<<opts.overlaps_ignore.get_percent_covered_thresh()<<")";
+
+            out << ")";
+            return out;
+        }
+
+        friend void to_xml(const loss_mmod_parts_& /*item*/, std::ostream& out)
+        {
+            // TODO, add options fields
+            out << "<loss_mmod_parts/>";
+        }
+
+    private:
+
+        template <typename net_type>
+        void tensor_to_dets (
+            const tensor& input_tensor,
+            const tensor& output_tensor,
+            long i,
+            std::vector<intermediate_detection>& dets_accum,
+            double adjust_threshold,
+            const net_type& net
+        ) const
+        {
+            // TIME MEASURE
+            // auto startTime = std::chrono::high_resolution_clock::now();
+            // end TIME MEASURE
+            DLIB_CASSERT(net.sample_expansion_factor() == 1,net.sample_expansion_factor());
+            if (options.use_bounding_box_regression)
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size()*5);
+            }
+            else
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size());
+            }
+
+            const float* out_data = output_tensor.host() + output_tensor.k()*output_tensor.nr()*output_tensor.nc()*i;
+            // scan the final layer and output the positive scoring locations
+            dets_accum.clear();
+            for (long k = 0; k < (long)options.detector_windows.size(); ++k)
+            {
+                for (long r = 0; r < output_tensor.nr(); ++r)
+                {
+                    for (long c = 0; c < output_tensor.nc(); ++c)
+                    {
+                        double score = out_data[(k*output_tensor.nr() + r)*output_tensor.nc() + c];
+                        if (score > adjust_threshold)
+                        {
+                            dpoint p = output_tensor_to_input_tensor(net, point(c,r));
+                            drectangle rect = centered_drect(p, options.detector_windows[k].width, options.detector_windows[k].height);
+                            rect = input_layer(net).tensor_space_to_image_space(input_tensor,rect);
+
+                            dets_accum.push_back(intermediate_detection(rect, score, (k*output_tensor.nr() + r)*output_tensor.nc() + c, k));
+
+                            if (options.use_bounding_box_regression)
+                            {
+                                const auto offset = options.detector_windows.size() + k*4;
+                                dets_accum.back().tensor_offset_dx = ((offset+0)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                dets_accum.back().tensor_offset_dy = ((offset+1)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                dets_accum.back().tensor_offset_dw = ((offset+2)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                dets_accum.back().tensor_offset_dh = ((offset+3)*output_tensor.nr() + r)*output_tensor.nc() + c;
+
+                                // apply BBR to dets_accum.back()
+                                double dx = out_data[dets_accum.back().tensor_offset_dx];
+                                double dy = out_data[dets_accum.back().tensor_offset_dy];
+                                double dw = out_data[dets_accum.back().tensor_offset_dw];
+                                double dh = out_data[dets_accum.back().tensor_offset_dh];
+                                dw = std::exp(dw);
+                                dh = std::exp(dh);
+                                double w = rect.width()-1;
+                                double h = rect.height()-1;
+                                rect = translate_rect(rect, dpoint(dx*w,dy*h));
+                                rect = centered_drect(rect, w*dw+1, h*dh+1);
+                                dets_accum.back().rect_bbr = rect;
+                            }
+                        }
+                    }
+                }
+            }
+            std::sort(dets_accum.rbegin(), dets_accum.rend());
+        }
+
+        template <typename net_type>
+        void tensor_to_dets_noHostCopy (
+            const tensor& input_tensor,
+            const tensor& output_tensor,
+            long i,
+            std::vector<intermediate_detection>& dets_accum,
+            double adjust_threshold,
+            const net_type& net
+        ) const
+        {
+            DLIB_CASSERT(net.sample_expansion_factor() == 1,net.sample_expansion_factor());
+            if (options.use_bounding_box_regression)
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size()*5);
+            }
+            else
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size());
+            }
+
+            dets_accum.clear();
+
+            // optimisation here is: instead of post-processing on cpu, do post-processing (rect searching) in cuda directly,
+            // and return only rects metadata wich is usually much much less in SIZE than full tensor feature maps/layers
+            // myFullTensorsDeviceToHostCpy On False will run on cuda Kernel and will avoid large host copy (cudaMemCopy 8MB, 30MB, how large your image is(?))
+            // if you set true cuda kernel will not be used, huge copy cudamemcopy will be performed, and tbb will be used to search rects on cpu (some speed-up also, but remember,
+            // avoiding huge HtoD copies is bigger deal here
+
+            std::vector<MyRectAndOffset> myRects;
+            // TODO: it probably should be device_write_only() and not getDeviceDataPointer(), pls check
+            const float* dev_data = output_tensor.getDeviceDataPointer() + output_tensor.k()*output_tensor.nr()*output_tensor.nc()*i; // data pointer in device (gpu)
+            const long int nr_m_nc = output_tensor.nr()*output_tensor.nc();
+            const size_t det_win_size = options.detector_windows.size();
+
+#ifdef DLIB_USE_CUDA
+            cuda::get_rects_from_device2host(myRects, dev_data, nr_m_nc, det_win_size, adjust_threshold, options.use_bounding_box_regression);
+#else
+            std::cout << "error - you can't use noHostCopy in non-gpu setting" << std::endl;
+#endif
+
+            for (auto && mr : myRects)
+            {
+                //std::cout << "myRects r.i: " << r.i << std::endl;
+                //std::cout << "myRects r.dh: " << r.dh << std::endl;
+
+                // get r and c indexes back from "i" index
+                int i_modulated = mr.i - mr.k*nr_m_nc;
+                int c = i_modulated % output_tensor.nc();
+                int r =  (i_modulated - c) / output_tensor.nc();
+                dpoint p = output_tensor_to_input_tensor(net, point(c,r));
+                drectangle rect = centered_drect(p, options.detector_windows[mr.k].width, options.detector_windows[mr.k].height);
+                rect = input_layer(net).tensor_space_to_image_space(input_tensor,rect);
+
+                dets_accum.push_back(intermediate_detection(rect, mr.score, (mr.k*output_tensor.nr() + r)*output_tensor.nc() + c, mr.k));
+                if (options.use_bounding_box_regression)
+                {
+                    dets_accum.back().tensor_offset_dx = mr.dx;
+                    dets_accum.back().tensor_offset_dy = mr.dy;
+                    dets_accum.back().tensor_offset_dw = mr.dw;
+                    dets_accum.back().tensor_offset_dh = mr.dh;
+
+                    // apply BBR
+
+                    double dw = std::exp(mr.dw);
+                    double dh = std::exp(mr.dh);
+                    double w = rect.width()-1;
+                    double h = rect.height()-1;
+                    rect = translate_rect(rect, dpoint(mr.dx*w,mr.dy*h));
+                    rect = centered_drect(rect, w*dw+1, h*dh+1);
+                    dets_accum.back().rect_bbr = rect;
+
+                }
+            }
+
+            std::sort(dets_accum.rbegin(), dets_accum.rend());
+        }
+
+        template <typename net_type>
+        void tensor_to_dets_parallel_TBB (
+            const tensor& input_tensor,
+            const tensor& output_tensor,
+            long i,
+            std::vector<intermediate_detection>& dets_accum,
+            double adjust_threshold,
+            const net_type& net
+        ) const
+        {
+            DLIB_CASSERT(net.sample_expansion_factor() == 1,net.sample_expansion_factor());
+            if (options.use_bounding_box_regression)
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size()*5);
+            }
+            else
+            {
+                DLIB_CASSERT(output_tensor.k() == (long)options.detector_windows.size());
+            }
+
+            bool myFullTensorsDeviceToHostCpy = true;
+
+            if(myFullTensorsDeviceToHostCpy)
+            {
+            auto startTime_out_data = std::chrono::high_resolution_clock::now();
+            // const int tens_depth = output_tensor.k();
+            // const auto additionalOffset = options.detector_windows.size() + k*4;
+
+            ///// -----
+            const float* out_data = output_tensor.host() + output_tensor.k()*output_tensor.nr()*output_tensor.nc()*i;
+            ///// -----
+
+            // TIME MEASURE
+            //auto finishTime_out_data = std::chrono::high_resolution_clock::now();
+            //std::chrono::duration<double> elapsedTime_out_data = finishTime_out_data - startTime_out_data;
+            //std::cout << "Elapsed time for out_data: " << elapsedTime_out_data.count() * 1000 << " ms\n";
+            // end TIME MEASURE
+
+            // scan the final layer and output the positive scoring locations
+            // @TODO check output_tensor.device() for cuda implementation
+            dets_accum.clear();
+            tbb::concurrent_vector<intermediate_detection> concurrent_dets_accum;
+
+            // TIME MEASURE
+            // auto startTime = std::chrono::high_resolution_clock::now();
+            // end IME MEASURE
+
+            tbb::parallel_for(tbb::blocked_range<size_t>(0, (size_t)options.detector_windows.size()),
+                              [&, out_data](const tbb::blocked_range<size_t>& r){
+
+            // warning not atomic cout
+            tbb::tick_count t0 = tbb::tick_count::now();
+            for(size_t k=r.begin(); k!=r.end(); ++k)
+            {
+                for (long r = 0; r < output_tensor.nr(); ++r)
+                {
+                    for (long c = 0; c < output_tensor.nc(); ++c)
+                    {
+                        double score = out_data[(k*output_tensor.nr() + r)*output_tensor.nc() + c];
+                        if (score > adjust_threshold)
+                        {
+                            std::string i_mssg = "";
+                            int i_index = (k*output_tensor.nr() + r)*output_tensor.nc() + c;
+                            i_mssg = i_mssg + "DEBUG - i calculated on host is: " + std::to_string(i_index);
+                            dpoint p = output_tensor_to_input_tensor(net, point(c,r));
+                            drectangle rect = centered_drect(p, options.detector_windows[k].width, options.detector_windows[k].height);
+                            rect = input_layer(net).tensor_space_to_image_space(input_tensor,rect);
+
+                            auto lastElem = concurrent_dets_accum.push_back(intermediate_detection(rect, score, (k*output_tensor.nr() + r)*output_tensor.nc() + c, k));
+                            if (options.use_bounding_box_regression)
+                            {
+                                std::string d_mssg = "";
+
+                                const auto offset = options.detector_windows.size() + k*4;
+                                lastElem->tensor_offset_dx = ((offset+0)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                lastElem->tensor_offset_dy = ((offset+1)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                lastElem->tensor_offset_dw = ((offset+2)*output_tensor.nr() + r)*output_tensor.nc() + c;
+                                lastElem->tensor_offset_dh = ((offset+3)*output_tensor.nr() + r)*output_tensor.nc() + c;
+
+                                // apply BBR to dets_accum.back()
+                                double dx = out_data[lastElem->tensor_offset_dx];
+                                double dy = out_data[lastElem->tensor_offset_dy];
+                                double dw = out_data[lastElem->tensor_offset_dw];
+                                double dh = out_data[lastElem->tensor_offset_dh];
+
+                                // checking dx dy dw dh
+                                // d_mssg = d_mssg + "dx,dy,dw,dh: " + std::to_string(dx) + ", " + std::to_string(dy) + ", " + std::to_string(dw) + ", " + std::to_string(dh) + "\n";
+                                // i_mssg += d_mssg;
+                                // std::cout <<  i_mssg;
+
+                                dw = std::exp(dw);
+                                dh = std::exp(dh);
+                                double w = rect.width()-1;
+                                double h = rect.height()-1;
+                                rect = translate_rect(rect, dpoint(dx*w,dy*h));
+                                rect = centered_drect(rect, w*dw+1, h*dh+1);
+                                lastElem->rect_bbr = rect;
+                            }
+                        }
+                    }
+                }
+            }
+            // tbb debug cout
+            //std::string message = "";
+            //message = message + "i am thread with rbegin(), rend(): " + std::to_string(r.begin()) + ", " + std::to_string(r.end());
+            //tbb::tick_count t1 = tbb::tick_count::now();
+            //message += " work took (s): " + std::to_string((t1-t0).seconds());
+            //std::cout << message << std::endl;
+            // end tbb debug cout
+
+                });
+
+            // TIME MEASURE
+            // auto finishTime = std::chrono::high_resolution_clock::now();
+            // std::chrono::duration<double> elapsedTime = finishTime - startTime;
+            // std::cout << "Elapsed time for tensor_to_dets: " << elapsedTime.count() * 1000 << " ms\n";
+            // end TIME MEASURE
+
+            // copy to std vec
+            for(auto && el : concurrent_dets_accum)
+                dets_accum.push_back(el);
+            }
+
+            std::sort(dets_accum.rbegin(), dets_accum.rend());
+        }
+
+        size_t find_best_detection_window (
+            rectangle rect,
+            const std::string& label,
+            use_image_pyramid assume_image_pyramid
+        ) const
+        {
+            if (assume_image_pyramid == use_image_pyramid::yes)
+            {
+                rect = move_rect(set_rect_area(rect, 400*400), point(0,0));
+            }
+            else
+            {
+                rect = rectangle(rect.width(), rect.height());
+            }
+
+            // Figure out which detection window in options.detector_windows is most similar to rect
+            // (in terms of aspect ratio, if assume_image_pyramid == use_image_pyramid::yes).
+            size_t best_i = 0;
+            double best_ratio_diff = -std::numeric_limits<double>::infinity();
+            for (size_t i = 0; i < options.detector_windows.size(); ++i)
+            {
+                if (options.detector_windows[i].label != label)
+                    continue;
+
+                rectangle det_window;
+
+                if (options.assume_image_pyramid == use_image_pyramid::yes)
+                {
+                    det_window = centered_rect(point(0,0), options.detector_windows[i].width, options.detector_windows[i].height);
+                    det_window = move_rect(set_rect_area(det_window, 400*400), point(0,0));
+                }
+                else
+                {
+                    det_window = rectangle(options.detector_windows[i].width, options.detector_windows[i].height);
+                }
+
+                double iou = box_intersection_over_union(rect, det_window);
+                if (iou > best_ratio_diff)
+                {
+                    best_ratio_diff = iou;
+                    best_i = i;
+                }
+            }
+            return best_i;
+        }
+
+        template <typename net_type>
+        bool image_rect_to_feat_coord (
+            point& tensor_p,
+            const tensor& input_tensor,
+            const rectangle& rect,
+            const std::string& label,
+            const net_type& net,
+            size_t& det_idx,
+            use_image_pyramid assume_image_pyramid
+        ) const
+        {
+            using namespace std;
+            if (!input_layer(net).image_contained_point(input_tensor,center(rect)))
+            {
+                std::ostringstream sout;
+                sout << "Encountered a truth rectangle located at " << rect << " that is outside the image." << endl;
+                sout << "The center of each truth rectangle must be within the image." << endl;
+                throw impossible_labeling_error(sout.str());
+            }
+
+            det_idx = find_best_detection_window(rect,label,assume_image_pyramid);
+
+            double scale = 1.0;
+            if (options.assume_image_pyramid == use_image_pyramid::yes)
+            {
+                // Compute the scale we need to be at to get from rect to our detection window.
+                // Note that we compute the scale as the max of two numbers.  It doesn't
+                // actually matter which one we pick, because if they are very different then
+                // it means the box can't be matched by the sliding window.  But picking the
+                // max causes the right error message to be selected in the logic below.
+                scale = std::max(options.detector_windows[det_idx].width/(double)rect.width(), options.detector_windows[det_idx].height/(double)rect.height());
+            }
+            else
+            {
+                // We don't want invariance to scale.
+                scale = 1.0;
+            }
+
+            const rectangle mapped_rect = input_layer(net).image_space_to_tensor_space(input_tensor, std::min(1.0,scale), rect);
+
+            // compute the detection window that we would use at this position.
+            tensor_p = center(mapped_rect);
+            rectangle det_window = centered_rect(tensor_p, options.detector_windows[det_idx].width,options.detector_windows[det_idx].height);
+            det_window = input_layer(net).tensor_space_to_image_space(input_tensor, det_window);
+
+            // make sure the rect can actually be represented by the image pyramid we are
+            // using.
+            if (box_intersection_over_union(rect, det_window) <= options.truth_match_iou_threshold)
+            {
+                std::cout << "Warning, ignoring object.  We encountered a truth rectangle with a width and height of " << rect.width() << " and " << rect.height() << ".  ";
+                std::cout << "The image pyramid and sliding windows can't output a rectangle of this shape.  ";
+                const double detector_area = options.detector_windows[det_idx].width*options.detector_windows[det_idx].height;
+                if (mapped_rect.area()/detector_area <= options.truth_match_iou_threshold)
+                {
+                    std::cout << "This is because the rectangle is smaller than the best matching detection window, which has a width ";
+                    std::cout << "and height of " << options.detector_windows[det_idx].width << " and " << options.detector_windows[det_idx].height << "." << std::endl;
+                }
+                else
+                {
+                    std::cout << "This is either because (1) the final layer's features have too large of a stride across the image, limiting the possible locations the sliding window can search ";
+                    std::cout << "or (2) because the rectangle's aspect ratio is too different from the best matching detection window, ";
+                    std::cout << "which has a width and height of " << options.detector_windows[det_idx].width << " and " << options.detector_windows[det_idx].height << "." << std::endl;
+                }
+                return true;
+            }
+
+            // now map through the CNN to the output layer.
+            tensor_p = input_tensor_to_output_tensor(net,tensor_p);
+
+            const tensor& output_tensor = net.get_output();
+            if (!get_rect(output_tensor).contains(tensor_p))
+            {
+                std::cout << "Warning, ignoring object.  We encountered a truth rectangle located at " << rect << " that is too close to the edge ";
+                std::cout << "of the image to be captured by the CNN features." << std::endl;
+                return true;
+            }
+
+            return false;
+        }
+
+
+        bool overlaps_ignore_box (
+            const std::vector<mmod_rect>& boxes,
+            const rectangle& rect
+        ) const
+        {
+            for (auto&& b : boxes)
+            {
+                if (b.ignore && options.overlaps_ignore(b, rect))
+                    return true;
+            }
+            return false;
+        }
+
+        std::pair<double,unsigned int> find_best_match(
+            const std::vector<mmod_rect>& boxes,
+            const rectangle& rect,
+            const std::string& label
+        ) const
+        {
+            double match = 0;
+            unsigned int best_idx = 0;
+            for (unsigned long i = 0; i < boxes.size(); ++i)
+            {
+                if (boxes[i].ignore || boxes[i].label != label)
+                    continue;
+
+                const double new_match = box_intersection_over_union(rect, boxes[i]);
+                if (new_match > match)
+                {
+                    match = new_match;
+                    best_idx = i;
+                }
+            }
+
+            return std::make_pair(match,best_idx);
+        }
+
+        std::pair<double,unsigned int> find_best_match(
+            const std::vector<mmod_rect>& boxes,
+            const rectangle& rect,
+            const size_t excluded_idx
+        ) const
+        {
+            double match = 0;
+            unsigned int best_idx = 0;
+            for (unsigned long i = 0; i < boxes.size(); ++i)
+            {
+                if (boxes[i].ignore || excluded_idx == i)
+                    continue;
+
+                const double new_match = box_intersection_over_union(rect, boxes[i]);
+                if (new_match > match)
+                {
+                    match = new_match;
+                    best_idx = i;
+                }
+            }
+
+            return std::make_pair(match,best_idx);
+        }
+
+        template <typename T>
+        inline bool overlaps_any_box_nms (
+            const std::vector<T>& rects,
+            const rectangle& rect
+        ) const
+        {
+            for (auto&& r : rects)
+            {
+                if (options.overlaps_nms(r.rect, rect))
+                    return true;
+            }
+            return false;
+        }
+
+
+        mmod_parts_options options;
+
+    };
+
+    template <int TAG_PARTS, typename SUBNET>
+    using loss_mmod_parts = add_loss_layer<loss_mmod_parts_<TAG_PARTS>, SUBNET>;
+
+// ----------------------------------------------------------------------------------------
+
     struct mmod_options
     {
     public:
@@ -1208,8 +2593,6 @@ namespace dlib
 
                 // Do non-max suppression
                 final_dets.clear();
-
-                // my-TODO @here potentially use tbb
                 for (unsigned long i = 0; i < dets_accum.size(); ++i)
                 {
                     if (overlaps_any_box_nms(final_dets, dets_accum[i].rect_bbr))
@@ -1641,6 +3024,7 @@ namespace dlib
             // avoiding huge HtoD copies is bigger deal here
 
             std::vector<MyRectAndOffset> myRects;
+            // TODO: it probably should be device_write_only() and not getDeviceDataPointer(), pls check
             const float* dev_data = output_tensor.getDeviceDataPointer() + output_tensor.k()*output_tensor.nr()*output_tensor.nc()*i; // data pointer in device (gpu)
             const long int nr_m_nc = output_tensor.nr()*output_tensor.nc();
             const size_t det_win_size = options.detector_windows.size();
@@ -1673,14 +3057,14 @@ namespace dlib
                     dets_accum.back().tensor_offset_dh = mr.dh;
 
                     // apply BBR
-                    /*
+
                     double dw = std::exp(mr.dw);
                     double dh = std::exp(mr.dh);
                     double w = rect.width()-1;
                     double h = rect.height()-1;
                     rect = translate_rect(rect, dpoint(mr.dx*w,mr.dy*h));
                     rect = centered_drect(rect, w*dw+1, h*dh+1);
-                    dets_accum.back().rect_bbr = rect;*/
+                    dets_accum.back().rect_bbr = rect;
 
                 }
             }

@@ -2118,6 +2118,46 @@ namespace dlib
 
      // ------------------------------------------------------------------------------------
 
+        void create_coord_map(
+                tensor& dest,
+                size_t dest_k_offset,
+                size_t count_k
+                ){
+            // for every N samples, fills two channels (feature maps) starting from k=dest_k_offset
+            // with coord value casted to the <-1, 1> range;
+            const size_t dest_sample_size = static_cast<size_t>(dest.nc() * dest.nr() * dest.k());
+
+            const size_t block_size = count_k * dest.nc() * dest.nr();
+            const size_t map_size = dest.nc() * dest.nr();
+
+            DLIB_CASSERT(dest.k() - dest_k_offset >= count_k, "Not enough space in dest tensor");
+            DLIB_CASSERT(count_k == 2, "coord maps others than k=2 are not supported");
+
+            float* dest_p = dest.host() + dest_k_offset * dest.nc() * dest.nr();
+            const long nr = dest.nr();
+            const long nc = dest.nc();
+
+            int i=0, j=0;
+            for (long cnt = 0; cnt < map_size; ++cnt)
+            {
+                *dest_p = (float)((double(i) / (nc - 1.0))*2.0 - 1.0);
+                *(dest_p + map_size) = (float)((double(j) / (nr - 1.0))*2.0 - 1.0);
+                i++;
+                if(cnt >= nc)
+                {
+                    i=0; j++;
+                }
+                dest_p++;
+            }
+
+            //reset pointer
+            dest_p = dest.host() + dest_k_offset * dest.nc() * dest.nr();
+
+            // copy same block N-1 times
+            for(int b =1; b < dest.num_samples(); b++)
+                ::memcpy(dest_p + b*dest_sample_size, dest_p, block_size * sizeof(float));
+        }
+
         void copy_tensor(
             bool add_to,
             tensor& dest,
