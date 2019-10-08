@@ -2581,7 +2581,7 @@ namespace dlib
             {
 
            #ifdef DLIB_USE_CUDA
-                tensor_to_dets_noHostCopy(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
+                tensor_to_dets(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
            #else
                 tensor_to_dets_parallel_TBB(input_tensor, output_tensor, i, dets_accum, adjust_threshold, sub);
            #endif
