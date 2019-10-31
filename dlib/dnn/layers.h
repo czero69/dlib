@@ -20,8 +20,16 @@ namespace dlib
 {
 
 // https://arxiv.org/abs/1807.03247 https://eng.uber.com/coordconv/
+// this layer returns two feature maps (two channels), one with i (or x) coordinate (0.._nr)
+// second with j (or y) coordinate (0 to _nc) . Both channels are scaled to the rane [-1,1].
+struct num_coord_con_outputs
+{
+    num_coord_con_outputs(unsigned long n) : num_outputs(n) {}
+    unsigned long num_outputs;
+};
 
 template <
+    long _num_filters,
     long _nr,
     long _nc,
     int _stride_y,
@@ -29,9 +37,11 @@ template <
     int _padding_y = _stride_y!=1? 0 : _nr/2,
     int _padding_x = _stride_x!=1? 0 : _nc/2
     >
-class ijcoord_
+class coord_con_
 {
 public:
+
+    static_assert(_num_filters > 0, "The number of filters must be > 0");
     static_assert(_nr >= 0, "The number of rows in a filter must be >= 0");
     static_assert(_nc >= 0, "The number of columns in a filter must be >= 0");
     static_assert(_stride_y > 0, "The filter stride must be > 0");
@@ -41,20 +51,21 @@ public:
     static_assert(_nr!=0 || 0 == _padding_y, "If _nr==0 then the padding must be set to 0 as well.");
     static_assert(_nc!=0 || 0 == _padding_x, "If _nr==0 then the padding must be set to 0 as well.");
 
-    ijcoord_( const int filters
+    coord_con_(
+        num_coord_con_outputs o
     ) :
         learning_rate_multiplier(1),
         weight_decay_multiplier(1),
         bias_learning_rate_multiplier(1),
         bias_weight_decay_multiplier(0),
-        num_filters_(filters),
+        num_filters_(o.num_outputs),
         padding_y_(_padding_y),
         padding_x_(_padding_x)
     {
         DLIB_CASSERT(num_filters_ > 0);
     }
 
-    ijcoord_() : ijcoord_(2) {}
+    coord_con_() : coord_con_(num_coord_con_outputs(_num_filters)) {}
 
     long num_filters() const { return num_filters_; }
     long nr() const
@@ -115,11 +126,14 @@ public:
         return p;
     }
 
-    ijcoord_ (
-        const ijcoord_& item
+    coord_con_ (
+        const coord_con_& item
     ) :
         params(item.params),
         filters(item.filters),
+        input2(item.input2),
+        filters_no_coord(item.filters_no_coord),
+        params_no_coord(item.params_no_coord),
         biases(item.biases),
         learning_rate_multiplier(item.learning_rate_multiplier),
         weight_decay_multiplier(item.weight_decay_multiplier),
@@ -133,8 +147,8 @@ public:
         // own copy to avoid trying to copy it and getting an error.
     }
 
-    ijcoord_& operator= (
-        const ijcoord_& item
+    coord_con_& operator= (
+        const coord_con_& item
     )
     {
         if (this == &item)
@@ -144,6 +158,9 @@ public:
         // own copy to avoid trying to copy it and getting an error.
         params = item.params;
         filters = item.filters;
+        input2 = item.input2;
+        filters_no_coord = item.filters_no_coord;
+        params_no_coord = item.params_no_coord;
         biases = item.biases;
         padding_y_ = item.padding_y_;
         padding_x_ = item.padding_x_;
@@ -161,32 +178,81 @@ public:
         const long filt_nr = _nr!=0 ? _nr : sub.get_output().nr();
         const long filt_nc = _nc!=0 ? _nc : sub.get_output().nc();
 
-        long num_inputs = filt_nr*filt_nc*sub.get_output().k();
+        // + 2 is for coord ij maps
+        long num_inputs = filt_nr*filt_nc*(sub.get_output().k() + 2);
+        long num_inputs_no_coord = filt_nr*filt_nc*(sub.get_output().k() + 0);
         long num_outputs = num_filters_;
         // allocate params for the filters and also for the filter bias values.
         params.set_size(num_inputs*num_filters_ + num_filters_);
+        params_no_coord.set_size(num_inputs_no_coord * num_filters_); // no need biases here
 
         dlib::rand rnd(std::rand());
         randomize_parameters(params, num_inputs+num_outputs, rnd);
 
-        filters = alias_tensor(num_filters_, sub.get_output().k(), filt_nr, filt_nc);
+        filters = alias_tensor(num_filters_, sub.get_output().k() + 2, filt_nr, filt_nc);
+        filters_no_coord = alias_tensor(num_filters_, sub.get_output().k(), filt_nr, filt_nc);
         biases = alias_tensor(1,num_filters_);
 
         // set the initial bias values to zero
         biases(params,filters.size()) = 0;
+
+        // create coord ij maps and alloc space ufor sub outpt and coord maps
+        const size_t N = sub.get_output().num_samples();
+        const size_t K = sub.get_output().k();
+        const size_t NR = sub.get_output().nr();
+        const size_t NC = sub.get_output().nc();
+        input2.set_size(N, K+2, NR, NC);
+        tt::create_coord_map(input2, 0, 2);
     }
 
     template <typename SUBNET>
     void forward(const SUBNET& sub, resizable_tensor& output)
     {
-        conv.setup(sub.get_output(),
+
+        // recreate coord ij maps and realloc space
+        auto& input = sub.get_output();
+        if(input.nr() != input2.nr() || input.nc() != input2.nc() || (input.k() + 2) != input2.k() || input.num_samples() != input2.num_samples())
+        {
+            //std::cout << input.nr() << ", " << input2.nr() <<", "  << input.nc() << ", " << input2.nc() << ", " << input.k() << ", " << input2.k() << ", " << input.num_samples() << ", " << input2.num_samples() << std::endl;
+            //std::cout << "coordConv input has changed - recreating coordMap!; " << std::endl;
+            const size_t N = sub.get_output().num_samples();
+            const size_t K = sub.get_output().k();
+            const size_t NR = sub.get_output().nr();
+            const size_t NC = sub.get_output().nc();
+            input2.clear();
+            input2.set_size(N, K+2, NR, NC);
+            tt::create_coord_map(input2, 0, 2);
+        }
+
+        // concat sub output to coord maps
+        tt::copy_tensor(false, (tensor &)input2, 2, input, 0, sub.get_output().k());
+
+        /*const size_t N = input2.num_samples();
+        const size_t K = input2.k();
+        const size_t NR = input2.nr();
+        const size_t NC = input2.nc();
+        std::cout << " output.host()[0]: " << input2.host()[0] << std::endl;
+        std::cout << " output.host()[5]: " << input2.host()[5] << std::endl;
+        std::cout << " output.host()[NR*NC/2]: " << input2.host()[NR*NC/2] << std::endl;
+        std::cout << " output.host()[NR*NC-1]: " << input2.host()[NR*NC-1] << std::endl;
+        std::cout << " output.host()[NR*NC]: " << input2.host()[NR*NC] << std::endl;
+        std::cout << " output.host()[NR*NC+1]: " << input2.host()[NR*NC+1] << std::endl;
+        std::cout << " output.host()[NR*NC+2]: " << input2.host()[NR*NC+2] << std::endl;
+        std::cout << " output.host()[NR*NC+5]: " << input2.host()[NR*NC+5] << std::endl;
+        std::cout << " output.host()[NR*NC+NR*NC/2]: " << input2.host()[NR*NC+NR*NC/2] << std::endl;
+        std::cout << " output.host()[2*NR*NC-1]: " << input2.host()[2*NR*NC-1] << std::endl;
+        std::cout << " output.host()[(N-1)*NR*NC*K + NR*NC + NR*NC - 1]: " << input2.host()[(N-1)*NR*NC*K + NR*NC + NR*NC - 1] << std::endl;
+        *///float * output_host_mem = output.host_write_only();
+        //std::cout << "output_host_mem[0]: " << output_host_mem[0] << std::endl;
+
+        conv.setup((tensor &)input2,
                    filters(params,0),
                    _stride_y,
                    _stride_x,
                    padding_y_,
                    padding_x_);
         conv(false, output,
-            sub.get_output(),
+            input2,
             filters(params,0));
 
         tt::add(1,output,1,biases(params,filters.size()));
@@ -195,12 +261,25 @@ public:
     template <typename SUBNET>
     void backward(const tensor& gradient_input, SUBNET& sub, tensor& params_grad)
     {
-        conv.get_gradient_for_data (true, gradient_input, filters(params,0), sub.get_gradient_input());
+        const size_t N = sub.get_output().num_samples();
+        const size_t K = sub.get_output().k();
+        const size_t NR = sub.get_output().nr();
+        const size_t NC = sub.get_output().nc();
+
+        // split filters in k dimention
+        DLIB_CASSERT(filters_no_coord.k() + 2 == filters.k())
+
+        auto p_nc = filters_no_coord(params_no_coord, 0);
+        auto p    = filters(params, 0);
+        tt::copy_tensor(false, p_nc, 0, p, 2, filters_no_coord.k());
+
+        DLIB_CASSERT(sub.get_gradient_input().k() == filters_no_coord.k())
+        conv.get_gradient_for_data (true, gradient_input, filters_no_coord(params_no_coord,0), sub.get_gradient_input());
         // no dpoint computing the parameter gradients if they won't be used.
         if (learning_rate_multiplier != 0)
         {
             auto filt = filters(params_grad,0);
-            conv.get_gradient_for_filters (false, gradient_input, sub.get_output(), filt);
+            conv.get_gradient_for_filters (false, gradient_input, (tensor &)input2, filt);
             auto b = biases(params_grad, filters.size());
             tt::assign_conv_bias_gradient(b, gradient_input);
         }
@@ -209,9 +288,9 @@ public:
     const tensor& get_layer_params() const { return params; }
     tensor& get_layer_params() { return params; }
 
-    friend void serialize(const ijcoord_& item, std::ostream& out)
+    friend void serialize(const coord_con_& item, std::ostream& out)
     {
-        serialize("con_4", out);
+        serialize("coord_con_4", out);
         serialize(item.params, out);
         serialize(item.num_filters_, out);
         serialize(_nr, out);
@@ -221,6 +300,8 @@ public:
         serialize(item.padding_y_, out);
         serialize(item.padding_x_, out);
         serialize(item.filters, out);
+        serialize(item.filters_no_coord, out);
+        serialize(item.params_no_coord, out);
         serialize(item.biases, out);
         serialize(item.learning_rate_multiplier, out);
         serialize(item.weight_decay_multiplier, out);
@@ -228,7 +309,7 @@ public:
         serialize(item.bias_weight_decay_multiplier, out);
     }
 
-    friend void deserialize(ijcoord_& item, std::istream& in)
+    friend void deserialize(coord_con_& item, std::istream& in)
     {
         std::string version;
         deserialize(version, in);
@@ -236,7 +317,7 @@ public:
         long nc;
         int stride_y;
         int stride_x;
-        if (version == "con_4")
+        if (version == "coord_con_4")
         {
             deserialize(item.params, in);
             deserialize(item.num_filters_, in);
@@ -247,17 +328,19 @@ public:
             deserialize(item.padding_y_, in);
             deserialize(item.padding_x_, in);
             deserialize(item.filters, in);
+            deserialize(item.filters_no_coord, in);
+            deserialize(item.params_no_coord, in);
             deserialize(item.biases, in);
             deserialize(item.learning_rate_multiplier, in);
             deserialize(item.weight_decay_multiplier, in);
             deserialize(item.bias_learning_rate_multiplier, in);
             deserialize(item.bias_weight_decay_multiplier, in);
-            if (item.padding_y_ != _padding_y) throw serialization_error("Wrong padding_y found while deserializing dlib::con_");
-            if (item.padding_x_ != _padding_x) throw serialization_error("Wrong padding_x found while deserializing dlib::con_");
-            if (nr != _nr) throw serialization_error("Wrong nr found while deserializing dlib::con_");
-            if (nc != _nc) throw serialization_error("Wrong nc found while deserializing dlib::con_");
-            if (stride_y != _stride_y) throw serialization_error("Wrong stride_y found while deserializing dlib::con_");
-            if (stride_x != _stride_x) throw serialization_error("Wrong stride_x found while deserializing dlib::con_");
+            if (item.padding_y_ != _padding_y) throw serialization_error("Wrong padding_y found while deserializing dlib::coord_con_");
+            if (item.padding_x_ != _padding_x) throw serialization_error("Wrong padding_x found while deserializing dlib::coord_con_");
+            if (nr != _nr) throw serialization_error("Wrong nr found while deserializing dlib::coord_con_");
+            if (nc != _nc) throw serialization_error("Wrong nc found while deserializing dlib::coord_con_");
+            if (stride_y != _stride_y) throw serialization_error("Wrong stride_y found while deserializing dlib::coord_con_");
+            if (stride_x != _stride_x) throw serialization_error("Wrong stride_x found while deserializing dlib::coord_con_");
         }
         else
         {
@@ -265,10 +348,15 @@ public:
         }
     }
 
-
-    friend std::ostream& operator<<(std::ostream& out, const ijcoord_& item)
+    void clean(
+    )
     {
-        out << "con\t ("
+        input2.clear();
+    }
+
+    friend std::ostream& operator<<(std::ostream& out, const coord_con_& item)
+    {
+        out << "coord_con\t ("
             << "num_filters="<<item.num_filters_
             << ", nr="<<item.nr()
             << ", nc="<<item.nc()
@@ -284,9 +372,9 @@ public:
         return out;
     }
 
-    friend void to_xml(const ijcoord_& item, std::ostream& out)
+    friend void to_xml(const coord_con_& item, std::ostream& out)
     {
-        out << "<con"
+        out << "<coord_con"
             << " num_filters='"<<item.num_filters_<<"'"
             << " nr='"<<item.nr()<<"'"
             << " nc='"<<item.nc()<<"'"
@@ -299,13 +387,16 @@ public:
             << " bias_learning_rate_mult='"<<item.bias_learning_rate_multiplier<<"'"
             << " bias_weight_decay_mult='"<<item.bias_weight_decay_multiplier<<"'>\n";
         out << mat(item.params);
-        out << "</con>";
+        out << "</coord_con>";
     }
 
 private:
 
     resizable_tensor params;
     alias_tensor filters, biases;
+    alias_tensor filters_no_coord;
+    resizable_tensor params_no_coord;
+    resizable_tensor input2;
 
     tt::tensor_conv conv;
     double learning_rate_multiplier;
@@ -322,15 +413,14 @@ private:
 };
 
 template <
+    long num_filters,
     long nr,
     long nc,
     int stride_y,
     int stride_x,
     typename SUBNET
     >
-using ijcoord = add_layer<ijcoord_<nr,nc,stride_y,stride_x>, SUBNET>;
-
-// ----------------------------------------------------------------------------------------
+using coord_con = add_layer<coord_con_<num_filters,nr,nc,stride_y,stride_x>, SUBNET>;
 
 // ----------------------------------------------------------------------------------------
 

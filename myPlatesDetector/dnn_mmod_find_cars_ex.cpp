@@ -55,30 +55,60 @@ template <long num_filters, typename SUBNET> using rcon5_1_div4  = relu<affine<c
 template <long num_filters, typename SUBNET> using rcon1_5_div4  = relu<affine<con<num_filters / 4,1,5,1,1,SUBNET>>>;
 template <long num_filters, typename SUBNET> using rcon1_1_div4  = relu<affine<con<num_filters / 4,1,1,1,1,SUBNET>>>;
 template <long num_filters, typename SUBNET> using rcon5_5_div4_str2  = relu<affine<con<num_filters / 4,5,5,2,2,SUBNET>>>;
+template <long num_filters, typename SUBNET> using rcon5_5_div4  = relu<affine<con<num_filters,5,5,1,1,SUBNET>>>;
 template <long num_filters, typename SUBNET> using rcon1_1  = relu<affine<con<num_filters,1,1,1,1,SUBNET>>>;
-
-
+template <long num_filters, typename SUBNET> using rcoord_con1_1  = relu<affine<coord_con<num_filters,1,1,1,1,SUBNET>>>;
+template <long num_filters, typename SUBNET> using rcoord_con1_1_div4  = relu<affine<coord_con<num_filters / 4,1,1,1,1,SUBNET>>>;
+template <long num_filters, typename SUBNET> using rcoord_con5_5_div4  = relu<affine<coord_con<num_filters,5,5,1,1,SUBNET>>>;
 
 template <long num_filters, typename SUBNET> using rfireBlock5 = rcon1_1<num_filters, rcon1_5_div4<num_filters, rcon5_1_div4<num_filters, rcon1_1_div4<num_filters, SUBNET>>>>;
 template <typename SUBNET> using _55_rfireBlock5  = rfireBlock5<55, SUBNET>;
 
 template <long num_filters, typename SUBNET> using rfireBlock5_v2 = rcon1_1<num_filters, rcon5_5_div4_str2<num_filters, rcon1_1_div4<num_filters, SUBNET>>>;
+template <long num_filters, typename SUBNET> using r_coord_fireBlock5_v2 = rcon1_1<num_filters, rcon5_5_div4_str2<num_filters, rcoord_con1_1_div4<num_filters, SUBNET>>>;
 template <typename SUBNET> using _55_rfireBlock5_v2  = rcon5_1_div4<55, rcon1_1<55, SUBNET>>;
+template <typename SUBNET> using _55_rfireBlock5_v3  = rcon5_5_div4<55, rcon1_1<55, SUBNET>>;
+template <typename SUBNET> using _55_coord_rfireBlock5_v3  = rcoord_con5_5_div4<55, rcon1_1<55, SUBNET>>;
 
 template <typename SUBNET> using _32part_downsampler_fb = max_pool<5,5, 2, 2, rfireBlock5<32, SUBNET>>;
 template <typename SUBNET> using _32part_downsampler_fb_v2 = rfireBlock5_v2<32, SUBNET>;
+template <typename SUBNET> using _32part_coord_downsampler_fb_v2 = r_coord_fireBlock5_v2<32, SUBNET>;
 
 
 template <typename SUBNET> using downsampler2  = _32part_downsampler_fb<_32part_downsampler_fb<relu<affine<con5d<16,SUBNET>>>>>;
 template <typename SUBNET> using downsampler2_v2  = _32part_downsampler_fb_v2<_32part_downsampler_fb_v2<relu<affine<con5d<16,SUBNET>>>>>;
+template <typename SUBNET> using coord_downsampler2_v2  = _32part_downsampler_fb_v2<_32part_coord_downsampler_fb_v2<relu<affine<con5d<16,SUBNET>>>>>;
 
-using net_type = loss_mmod<con<1,9,9,1,1,rcon5<downsampler<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
+//using net_type = loss_mmod<con<1,9,9,1,1,rcon5<downsampler<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
 //using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5<downsampler2<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
 
 //using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5_v2<downsampler2_v2<input_rgb_image_pyramid<pyramid_down<4>>>>>>;
 
 // not yet rdy//using net_type = loss_mmod<con<1,9,9,1,1,_55_rfireBlock5_v2<downsampler2_v2<rcon1_1< 1 , input_rgb_image_pyramid<pyramid_down<4>>>>>>>;
 
+// experiment phase here:
+
+// model 7 (t2)
+
+// model 7-v2
+//using net_type = loss_mmod<concat2<tag5, tag4, tag5<coord_con<28,9,9,1,1, skip3<tag4<con<7,9,9,1,1,tag3<_55_rfireBlock5_v2<coord_downsampler2_v2<rcon1_1< 1 , input_rgb_image_pyramid<pyramid_down<4>>>>>>>>>>>>>;
+
+// model7v3
+using net_type = loss_mmod<concat2<tag5, tag4, tag5<con<28,9,9,1,1, skip3<tag4<con<7,9,9,1,1,tag3<_55_coord_rfireBlock5_v3<multiply<coord_downsampler2_v2<input_rgb_image_pyramid<pyramid_down<4>>>>>>>>>>>>>;
+
+//model8
+template <long num_filters, typename SUBNET> using con1_1  = affine<con<num_filters,1,1,1,1,SUBNET>>;
+template <long num_filters, typename SUBNET> using rcon5_5_str2  = relu<affine<con<num_filters,5,5,2,2,SUBNET>>>;
+
+
+template <long num_filters, typename SUBNET> using rskip_coord_fireBlock5_v5 = relu<add_prev1<con1_1<num_filters, rcon5_5_str2<num_filters/2, rcoord_con1_1<num_filters/2, tag1<SUBNET>>>>>>;
+template <long num_filters, typename SUBNET> using rskip_down_fireBlock5_v5 = relu<add_prev2<avg_pool<2,2,2,2,skip1<tag2<con1_1<num_filters, rcon5_5_str2<num_filters/2, rcon1_1<num_filters/2, tag1<SUBNET>>>>>>>>>;
+template <long num_filters, typename SUBNET> using rskip_down_coord_fireBlock5_v5 = relu<add_prev7<avg_pool<2,2,2,2,skip6<tag7<con1_1<num_filters, rcon5_5_str2<num_filters/2, rcoord_con1_1<num_filters/2, tag6<SUBNET>>>>>>>>>;
+
+template <typename SUBNET> using skip_coord_downsampler2_v3  = rskip_down_fireBlock5_v5<32, rskip_down_coord_fireBlock5_v5<32, relu<affine<con5d<16,SUBNET>>>>>;
+
+
+//using net_type = loss_mmod<concat2<tag4, tag5, tag5<con<28,9,9,1,1, skip3<tag4<con<7,9,9,1,1,tag3<rskip_coord_fireBlock5_v5<55, skip_coord_downsampler2_v3<input_rgb_image_pyramid<pyramid_down<4>>>>>>>>>>>>;
 // ----------------------------------------------------------------------------------------
 
 int main(int argc, char** argv) try
@@ -156,7 +186,7 @@ int main(int argc, char** argv) try
     // Run the detector on the image and show us the output.
 
 
-    for (auto&& d : net(img))
+    for (auto&& d : net.process(img, -0.9))
     {
         // We use a shape_predictor to refine the exact shape and location of the detection
         // box.  This shape_predictor is trained to simply output the 4 corner points of
@@ -179,6 +209,10 @@ int main(int argc, char** argv) try
     std::cout << "-------warmup ---------" << std::endl;
     for(int i = 0; i < 5; i++)
         net(img);
+
+    // this is how you can set probability threshold for detector
+    // or for batches process_batch
+    //net.process(img, -0.5);
 
     std::cout << "aw net.subnet().get_output().k() :" <<  net.subnet().get_output().k() << std::endl;
     std::cout << "aw net.subnet().layer_details().get_layer_params().k() :" <<  net.subnet().layer_details().get_layer_params().k() << std::endl;
@@ -263,6 +297,9 @@ int main(int argc, char** argv) try
     cout << "jet color mapping range:  lower="<< lower << "  upper="<< upper << endl;
 
 
+
+    //
+    net.process(img, -0.9);
 
     // Create a tiled pyramid image and display it on the screen. 
     std::vector<rectangle> rects;

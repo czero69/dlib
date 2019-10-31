@@ -962,6 +962,22 @@ namespace dlib { namespace tt
 #endif
     }
 
+// ------------------------------------------------------------------------------------
+
+    void create_coord_map(
+                tensor& dest,
+                size_t dest_k_offset,
+                size_t count_k
+    )
+    {
+#ifdef DLIB_USE_CUDA
+        cuda::create_coord_map(dest, dest_k_offset, count_k);
+#else
+        cpu::create_coord_map(dest, dest_k_offset, count_k);
+#endif
+    }
+
+
 // ----------------------------------------------------------------------------------------
 
     void inv::
